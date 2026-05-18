@@ -51,7 +51,39 @@ Request these scopes for labs + notes:
 - `launch/patient` — standalone patient launch
 - `openid fhirUser` — identity token
 
-### 5. Save and note your Client ID
+### 5. Select API Endpoints
+
+Epic requires selecting specific API interactions. Select these R4 endpoints:
+
+**Search (for querying collections):**
+- Observation.Search (Labs) (R4)
+- Observation.Search (Vital Signs) (R4)
+- Observation.Search (Social History) (R4)
+- Observation.Search (Assessments) (R4)
+- DiagnosticReport.Search (Results) (R4)
+- DocumentReference.Search (Clinical Notes) (R4)
+- DocumentReference.Search (Labs) (R4)
+- Encounter.Search (Patient Chart) (R4)
+- Condition.Search (Problems) (R4)
+- Condition.Search (Encounter Diagnosis) (R4)
+- Condition.Search (Health Concerns) (R4)
+- Condition.Search (Care Plan Problem) (R4)
+- AllergyIntolerance.Search (Patient Chart) (R4)
+- MedicationRequest.Search (Signed Medication Order) (R4)
+- Patient.Search (Demographics) (R4)
+
+**Read (for fetching individual resources by ID):**
+- Patient.Read (Demographics) (R4) — patient name/DOB lookup
+- Observation.Read (Labs) (R4) — dedup cross-references from DiagnosticReports
+- Observation.Read (Vital Signs) (R4) — individual vital sign reads
+- Binary.Read (Clinical Notes) (R4) — note content (HTML/RTF attachments)
+- Binary.Read (Labs) (R4) — lab report document content
+
+> **Note:** Without the Binary.Read endpoints, note and report content will return 403.
+> Without Observation.Read (Labs), the dedup logic cannot fetch referenced observations.
+> These are separate from the Search endpoints — both are needed.
+
+### 6. Save and note your Client ID
 
 After saving, Epic gives you a **Non-Production Client ID** immediately.
 This works against any Epic sandbox and (importantly) against real MyChart endpoints
@@ -60,7 +92,7 @@ for patient-access apps under the Cures Act.
 You do NOT need a "production" review for personal patient access — the non-production
 client ID works for accessing your own records via MyChart login.
 
-### 6. Find your provider's FHIR endpoint
+### 7. Find your provider's FHIR endpoint
 
 Each health system publishes a FHIR base URL. You can discover it from the MyChart URL:
 
