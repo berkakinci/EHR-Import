@@ -1,0 +1,87 @@
+# Development Guide
+
+## Architecture
+
+```mermaid
+flowchart TD
+    config[config.py + config.json] --> auth
+    config --> discover
+    config --> pull
+
+    discover[discover_endpoints.py] -->|finds FHIR URLs| endpoints[(discovered_endpoints.json)]
+    endpoints --> auth
+
+    auth[auth.py] -->|OAuth2 via browser| epic[Epic FHIR API]
+    auth -->|saves tokens| tokens[(tokens.json)]
+
+    tokens --> pull
+    pull[pull_data.py] -->|fetches labs, notes, reports| epic
+    pull -->|stores structured data| db[(db.py / ehr_data.db)]
+    pull -->|saves raw JSON| raw[(raw_pulls/)]
+```
+
+## File Responsibilities
+
+| File | Role |
+|------|------|
+| `config.py` | Central config: loads `config.json` + `.env`, resolves all paths |
+| `config.json` | Public config: client IDs, redirect URI, provider list |
+| `auth.py` | OAuth2 authorization code flow with HTTPS callback server |
+| `pull_data.py` | FHIR data fetching, deduplication, storage |
+| `db.py` | SQLite schema, connection management |
+| `discover_endpoints.py` | Probes MyChart URLs to find FHIR base/auth/token endpoints |
+
+## Data Flow
+
+1. `discover_endpoints.py` finds FHIR URLs → saves to `discovered_endpoints.json`
+2. `auth.py` runs OAuth2 flow → saves tokens to `tokens.json`
+3. `pull_data.py` uses tokens to query FHIR → stores in `ehr_data.db` + `raw_pulls/`
+
+## Key Design Decisions
+
+- **Configurable data directory** — private data lives outside the repo (default sibling dir)
+- **Per-provider tokens** — each provider gets its own token record; supports multiple EHRs
+- **Lab/report deduplication** — cross-references DiagnosticReport results against Observations to avoid double-counting (pattern from FetchMyEpicToken)
+- **HTTPS callback** — Epic requires secure redirect URIs for production; self-signed cert for localhost
+- **Confidential client** — enables refresh tokens for ongoing access without re-auth
+- **Raw JSON preservation** — every pull saves raw FHIR responses alongside structured DB storage
+
+## Adding a New Provider
+
+1. Add entry to `config.json` under `providers` with `mychart_base` URL
+2. Run `python discover_endpoints.py` to find its FHIR endpoints
+3. Run `python auth.py "<new provider>"` to authenticate
+
+## Database Schema
+
+See `db.py` for full schema. Tables:
+- `labs` — structured lab results (code, value, unit, reference range, date)
+- `notes` — clinical notes (type, author, date, full text content)
+- `diagnostic_reports` — pathology/radiology text reports
+- `sync_log` — tracks pull history per provider
+
+## Testing Against Epic Sandbox
+
+```bash
+USE_SANDBOX=true python auth.py "Epic Sandbox"
+```
+
+Uses the non-production client ID. Sandbox test users are available on the Epic login page.
+
+## Dependencies
+
+- `requests` — HTTP client for FHIR API calls
+- `python-dotenv` — .env file loading
+- `httpx` — async HTTP (for future parallel fetching)
+- `cryptography` — self-signed cert generation
+
+## App Registration
+
+The included client ID works for anyone. If you want to register your own app
+(e.g., forking this project), see [registration-guide.md](registration-guide.md).
+
+## Acknowledgments
+
+Lab/report deduplication logic informed by
+[Fetch My Epic Token](https://github.com/glmck13/FetchMyEpicToken) by glmck13 —
+a handy tool for extracting EHR data via Epic's FHIR API. Thanks for the prior art.

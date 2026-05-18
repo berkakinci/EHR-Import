@@ -1,0 +1,32 @@
+# Secrets
+.env
+
+# Private data symlink
+conversation_state.md
+
+# OS junk
+.DS_Store
+._*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.coverage
+.hypothesis/
+
+# SQLite temp files
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Editor/IDE
+.vscode/
+*~
+*.bak
+
+# In case someone sets DATA_DIR to inside the project
+ehr_data.db
+tokens.json
+discovered_endpoints.json
+raw_pulls/
