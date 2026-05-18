@@ -257,7 +257,7 @@ def extract_note_content(doc_ref: dict, base_url: str, token: str) -> tuple[str 
     return None, "no_attachment", "Attachments present but no data or url fields found", None
 
 
-def store_labs(db, labs: list, provider: str):
+def store_labs(db, labs: list, provider: str, patient_id: str):
     """Store lab observations in the database."""
     cursor = db.cursor()
     stored = 0
@@ -273,10 +273,10 @@ def store_labs(db, labs: list, provider: str):
 
         cursor.execute("""
             INSERT OR REPLACE INTO labs
-            (fhir_id, provider, code_display, value, unit, reference_range, status, effective_date, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (fhir_id, patient_id, provider, code_display, value, unit, reference_range, status, effective_date, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            fhir_id, provider, code, value, unit, ref_range, status,
+            fhir_id, patient_id, provider, code, value, unit, ref_range, status,
             effective_date, json.dumps(lab),
         ))
         stored += 1
@@ -285,7 +285,7 @@ def store_labs(db, labs: list, provider: str):
     print(f"  → Stored {stored} lab results")
 
 
-def store_diagnostic_reports(db, reports: list, provider: str, base_url: str, token: str):
+def store_diagnostic_reports(db, reports: list, provider: str, patient_id: str, base_url: str, token: str):
     """Store DiagnosticReport resources in the database, fetching presentedForm content."""
     cursor = db.cursor()
     stored = 0
@@ -314,12 +314,12 @@ def store_diagnostic_reports(db, reports: list, provider: str, base_url: str, to
 
         cursor.execute("""
             INSERT OR REPLACE INTO diagnostic_reports
-            (fhir_id, provider, code_display, status, effective_date,
+            (fhir_id, patient_id, provider, code_display, status, effective_date,
              result_observation_ids, content_text,
              content_fetch_status, content_fetch_detail, content_fetch_url, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            fhir_id, provider, code, status, effective_date,
+            fhir_id, patient_id, provider, code, status, effective_date,
             result_obs_ids, content_text,
             fetch_status, fetch_detail, fetch_url, json.dumps(report),
         ))
@@ -397,7 +397,7 @@ def _extract_report_content(report: dict, base_url: str, token: str) -> tuple[st
     return None, "no_attachment", "presentedForm present but no data or url fields found", None
 
 
-def store_notes(db, notes: list, provider: str, base_url: str, token: str):
+def store_notes(db, notes: list, provider: str, patient_id: str, base_url: str, token: str):
     """Store clinical notes in the database."""
     cursor = db.cursor()
     stored = 0
@@ -418,11 +418,11 @@ def store_notes(db, notes: list, provider: str, base_url: str, token: str):
 
         cursor.execute("""
             INSERT OR REPLACE INTO notes
-            (fhir_id, provider, doc_type, author, date, status, content_text,
+            (fhir_id, patient_id, provider, doc_type, author, date, status, content_text,
              content_fetch_status, content_fetch_detail, content_fetch_url, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            fhir_id, provider, doc_type, author, date, status,
+            fhir_id, patient_id, provider, doc_type, author, date, status,
             content_text, fetch_status, fetch_detail, fetch_url, json.dumps(note),
         ))
         stored += 1
@@ -549,14 +549,14 @@ def main():
         # Deduplicate: separate true labs from pathology/diagnostic text observations
         labs, diagnostic_obs = deduplicate_labs_and_reports(labs, reports, base_url, access_token)
 
-        store_labs(db, labs, provider_name)
+        store_labs(db, labs, provider_name, patient_id)
 
         # Store diagnostic reports (metadata + presentedForm content)
-        store_diagnostic_reports(db, reports, provider_name, base_url, access_token)
+        store_diagnostic_reports(db, reports, provider_name, patient_id, base_url, access_token)
 
         # Pull notes
         notes = pull_notes(base_url, patient_id, access_token, since)
-        store_notes(db, notes, provider_name, base_url, access_token)
+        store_notes(db, notes, provider_name, patient_id, base_url, access_token)
 
         # Save raw data
         RAW_PULLS_DIR.mkdir(exist_ok=True)

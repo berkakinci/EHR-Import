@@ -10,8 +10,9 @@ EHRs into a local, queryable database for personal health tracking and research.
 1. **One-time bulk export** — pull full history of labs and notes
 2. **Incremental updates** — pull only new data since last sync
 3. **Multi-provider** — support multiple Epic health systems from one tool
-4. **Local-first** — all data stays on the user's machine; no cloud dependency
-5. **Open source** — shareable client ID; anyone with MyChart can use it
+4. **Multi-patient** — support family members via proxy access (same provider, different patients)
+5. **Local-first** — all data stays on the user's machine; no cloud dependency
+6. **Open source** — shareable client ID; anyone with MyChart can use it
 
 ## Non-Goals
 
@@ -53,6 +54,7 @@ EHRs into a local, queryable database for personal health tracking and research.
 - SQLite database in private directory
 - Raw FHIR JSON preserved alongside structured tables
 - Per-provider partitioning via `provider` column
+- Per-patient partitioning via `patient_id` column (supports family members)
 - Sync log for tracking pull history
 - Content fetch status tracking on notes and reports (status, detail, URL for retry)
 - OperationOutcome resources filtered from FHIR Bundle entries before storage

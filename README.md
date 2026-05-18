@@ -1,6 +1,6 @@
 # EHR Import
 
-Pull your personal health records (labs, clinical notes) from Epic-based EHRs into a local database.
+Pull your personal health records (labs, clinical notes) from Epic-based EHRs (Electronic Health Records) into a local database.
 
 Uses the FHIR R4 API with SMART on FHIR authentication — you log in with your MyChart credentials and the app downloads your data. Everything stays on your machine.
 
@@ -33,6 +33,7 @@ python pull_data.py "Boston Children's Hospital" --since 2024-06-01
 - **Diagnostic reports** — imaging, pathology, lab panels with presentedForm content
 - Stored in a local SQLite database you can query however you like
 - Failed content fetches are tracked (status + URL) for easy retry
+- Multi-patient support — pull records for family members from the same provider
 
 ## Supported Providers
 

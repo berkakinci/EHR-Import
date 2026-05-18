@@ -41,6 +41,7 @@ flowchart TD
 
 - **Configurable data directory** — private data lives outside the repo (default sibling dir)
 - **Per-provider tokens** — each provider gets its own token record; supports multiple EHRs
+- **Multi-patient support** — `patient_id` column on all data tables; supports pulling records for family members via proxy access
 - **Lab/report deduplication** — cross-references DiagnosticReport results against Observations to avoid double-counting (pattern from FetchMyEpicToken)
 - **OperationOutcome filtering** — Epic sometimes includes OperationOutcome resources in Bundle entries (e.g., parameter warnings); these are filtered out before storage
 - **HTTPS callback with retry loop** — Epic requires secure redirect URIs; the callback server loops to survive browser cert warnings and preflight requests on first use
@@ -57,10 +58,12 @@ flowchart TD
 ## Database Schema
 
 See `db.py` for full schema. Tables:
-- `labs` — structured lab results (code, value, unit, reference range, date)
-- `notes` — clinical notes (type, author, date, full text content, fetch status/URL)
-- `diagnostic_reports` — imaging/pathology/lab panels (code, date, presentedForm content, result observation refs, fetch status/URL)
+- `labs` — structured lab results (patient_id, code, value, unit, reference range, date)
+- `notes` — clinical notes (patient_id, type, author, date, full text content, fetch status/URL)
+- `diagnostic_reports` — imaging/pathology/lab panels (patient_id, code, date, presentedForm content, result observation refs, fetch status/URL)
 - `sync_log` — tracks pull history per provider
+
+All data tables include `patient_id` (FHIR patient ID from the token response) to support multiple family members from the same provider. Unique constraint is `(fhir_id, patient_id)`.
 
 Content fetch tracking columns (`content_fetch_status`, `content_fetch_detail`, `content_fetch_url`) on `notes` and `diagnostic_reports` enable querying for failed fetches and retrying them with a fresh token.
 

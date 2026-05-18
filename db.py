@@ -24,7 +24,8 @@ def init_db():
     cursor.executescript("""
         CREATE TABLE IF NOT EXISTS labs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fhir_id TEXT UNIQUE NOT NULL,
+            fhir_id TEXT NOT NULL,
+            patient_id TEXT NOT NULL,
             provider TEXT NOT NULL,
             code_display TEXT,
             value TEXT,
@@ -33,12 +34,14 @@ def init_db():
             status TEXT,
             effective_date TEXT,
             raw_json TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(fhir_id, patient_id)
         );
 
         CREATE TABLE IF NOT EXISTS notes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fhir_id TEXT UNIQUE NOT NULL,
+            fhir_id TEXT NOT NULL,
+            patient_id TEXT NOT NULL,
             provider TEXT NOT NULL,
             doc_type TEXT,
             author TEXT,
@@ -49,12 +52,14 @@ def init_db():
             content_fetch_detail TEXT,
             content_fetch_url TEXT,
             raw_json TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(fhir_id, patient_id)
         );
 
         CREATE TABLE IF NOT EXISTS diagnostic_reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fhir_id TEXT UNIQUE NOT NULL,
+            fhir_id TEXT NOT NULL,
+            patient_id TEXT NOT NULL,
             provider TEXT NOT NULL,
             code_display TEXT,
             status TEXT,
@@ -65,7 +70,8 @@ def init_db():
             content_fetch_detail TEXT,
             content_fetch_url TEXT,
             raw_json TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(fhir_id, patient_id)
         );
 
         CREATE TABLE IF NOT EXISTS sync_log (
@@ -80,12 +86,15 @@ def init_db():
         );
 
         CREATE INDEX IF NOT EXISTS idx_labs_provider ON labs(provider);
+        CREATE INDEX IF NOT EXISTS idx_labs_patient ON labs(patient_id);
         CREATE INDEX IF NOT EXISTS idx_labs_date ON labs(effective_date);
         CREATE INDEX IF NOT EXISTS idx_labs_code ON labs(code_display);
         CREATE INDEX IF NOT EXISTS idx_notes_provider ON notes(provider);
+        CREATE INDEX IF NOT EXISTS idx_notes_patient ON notes(patient_id);
         CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);
         CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(doc_type);
         CREATE INDEX IF NOT EXISTS idx_diag_provider ON diagnostic_reports(provider);
+        CREATE INDEX IF NOT EXISTS idx_diag_patient ON diagnostic_reports(patient_id);
         CREATE INDEX IF NOT EXISTS idx_diag_date ON diagnostic_reports(effective_date);
     """)
 
