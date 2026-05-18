@@ -97,3 +97,6 @@ The included client ID works for anyone. If you want to register your own app
 Lab/report deduplication logic informed by
 [Fetch My Epic Token](https://github.com/glmck13/FetchMyEpicToken) by glmck13 —
 a handy tool for extracting EHR data via Epic's FHIR API. Thanks for the prior art.
+
+App icon from [Health Icons](https://healthicons.org/) — a free, open source icon set
+for public health projects (CC0 license).

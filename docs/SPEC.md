@@ -34,6 +34,8 @@ EHRs into a local, queryable database for personal health tracking and research.
 
 | Data Type | FHIR Resource | Notes |
 |-----------|--------------|-------|
+| Imaging studies | Media (Study), Binary (Study) | DICOM images if available |
+| Study findings | Observation (Study Finding) | Structured imaging findings |
 | Vital signs | Observation (category: vital-signs) | BP, HR, temp, weight |
 | Conditions | Condition | Problem list, diagnoses |
 | Encounters | Encounter | Visit history |

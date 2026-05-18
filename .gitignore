@@ -4,6 +4,9 @@
 # Private data symlink
 conversation_state.md
 
+# Reference docs (PDF exports from fhir.epic.com, not redistributable)
+docs/Documentation - for Reference/
+
 # OS junk
 .DS_Store
 ._*

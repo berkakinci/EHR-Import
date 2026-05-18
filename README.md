@@ -28,8 +28,9 @@ python pull_data.py "Boston Children's Hospital" --since 2024-06-01
 
 ## What You Get
 
+- **Patient demographics** — name, date of birth
 - **Labs** — all lab results with values, units, reference ranges, dates
-- **Clinical notes** — visit notes, consult notes, discharge summaries (with fetch status tracking)
+- **Clinical notes** — visit notes, consult notes, discharge summaries (full text content)
 - **Diagnostic reports** — imaging, pathology, lab panels with presentedForm content
 - Stored in a local SQLite database you can query however you like
 - Failed content fetches are tracked (status + URL) for easy retry
