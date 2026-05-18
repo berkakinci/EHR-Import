@@ -42,9 +42,11 @@ flowchart TD
 - **Configurable data directory** — private data lives outside the repo (default sibling dir)
 - **Per-provider tokens** — each provider gets its own token record; supports multiple EHRs
 - **Lab/report deduplication** — cross-references DiagnosticReport results against Observations to avoid double-counting (pattern from FetchMyEpicToken)
-- **HTTPS callback** — Epic requires secure redirect URIs for production; self-signed cert for localhost
+- **OperationOutcome filtering** — Epic sometimes includes OperationOutcome resources in Bundle entries (e.g., parameter warnings); these are filtered out before storage
+- **HTTPS callback with retry loop** — Epic requires secure redirect URIs; the callback server loops to survive browser cert warnings and preflight requests on first use
 - **Confidential client** — enables refresh tokens for ongoing access without re-auth
 - **Raw JSON preservation** — every pull saves raw FHIR responses alongside structured DB storage
+- **Content fetch tracking** — notes and diagnostic reports track fetch status (`ok`, `fetch_failed`, `empty`, `no_attachment`) with the resolved URL, enabling automated retry of failed fetches
 
 ## Adding a New Provider
 
@@ -56,17 +58,24 @@ flowchart TD
 
 See `db.py` for full schema. Tables:
 - `labs` — structured lab results (code, value, unit, reference range, date)
-- `notes` — clinical notes (type, author, date, full text content)
-- `diagnostic_reports` — pathology/radiology text reports
+- `notes` — clinical notes (type, author, date, full text content, fetch status/URL)
+- `diagnostic_reports` — imaging/pathology/lab panels (code, date, presentedForm content, result observation refs, fetch status/URL)
 - `sync_log` — tracks pull history per provider
+
+Content fetch tracking columns (`content_fetch_status`, `content_fetch_detail`, `content_fetch_url`) on `notes` and `diagnostic_reports` enable querying for failed fetches and retrying them with a fresh token.
 
 ## Testing Against Epic Sandbox
 
 ```bash
 USE_SANDBOX=true python auth.py "Epic Sandbox"
+USE_SANDBOX=true python pull_data.py "Epic Sandbox"
 ```
 
-Uses the non-production client ID. Sandbox test users are available on the Epic login page.
+Uses the non-production client ID. Sandbox test credentials: `fhircamila` / `epicepic1`.
+
+Note: The sandbox does not serve Binary resource content (returns 403), so clinical
+notes and diagnostic report attachments will show `content_fetch_status = 'fetch_failed'`.
+This is expected — production endpoints serve the actual content.
 
 ## Dependencies
 

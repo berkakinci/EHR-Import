@@ -201,7 +201,16 @@ def authorize(provider_name: str) -> dict:
     webbrowser.open(auth_url)
 
     print(f"Waiting for callback on localhost:{port} ({'HTTPS' if use_https else 'HTTP'})...")
-    server.handle_request()  # Handle single request (the callback)
+    print("(If your browser asks about a certificate warning, accept it and continue.)")
+
+    # Wait for the auth code, handling multiple requests.
+    # The browser may make extra requests (cert preflight, favicon, etc.)
+    # before delivering the actual callback with the code.
+    # No timeout — user may need time to read consent pages.
+    server.timeout = None
+
+    while not CallbackHandler.auth_code:
+        server.handle_request()
 
     if not CallbackHandler.auth_code:
         raise RuntimeError("No authorization code received")

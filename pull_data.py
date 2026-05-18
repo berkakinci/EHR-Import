@@ -40,7 +40,11 @@ def get_all_pages(base_url: str, resource_path: str, token: str, params: dict = 
 
     while True:
         for entry in bundle.get("entry", []):
-            entries.append(entry.get("resource", entry))
+            resource = entry.get("resource", entry)
+            # Skip OperationOutcome resources (warnings/errors mixed into results)
+            if resource.get("resourceType") == "OperationOutcome":
+                continue
+            entries.append(resource)
 
         # Check for next page
         next_link = None
@@ -69,7 +73,6 @@ def pull_labs(base_url: str, patient_id: str, token: str, since: str = None) -> 
     params = {
         "patient": patient_id,
         "category": "laboratory",
-        "_sort": "-date",
         "_count": "100",
     }
     if since:
@@ -85,7 +88,6 @@ def pull_diagnostic_reports(base_url: str, patient_id: str, token: str, since: s
     """Pull DiagnosticReports (lab panels, pathology, etc.)."""
     params = {
         "patient": patient_id,
-        "_sort": "-date",
         "_count": "100",
     }
     if since:
@@ -165,7 +167,6 @@ def pull_notes(base_url: str, patient_id: str, token: str, since: str = None) ->
     params = {
         "patient": patient_id,
         "category": "clinical-note",
-        "_sort": "-date",
         "_count": "50",
     }
     if since:
@@ -177,9 +178,21 @@ def pull_notes(base_url: str, patient_id: str, token: str, since: str = None) ->
     return notes
 
 
-def extract_note_content(doc_ref: dict, base_url: str, token: str) -> str | None:
-    """Extract text content from a DocumentReference."""
-    for content in doc_ref.get("content", []):
+def extract_note_content(doc_ref: dict, base_url: str, token: str) -> tuple[str | None, str, str | None, str | None]:
+    """
+    Extract text content from a DocumentReference.
+
+    Returns (content, fetch_status, fetch_detail, fetch_url) where:
+      - content: the text, or None if unavailable
+      - fetch_status: 'ok', 'fetch_failed', 'no_attachment', or 'empty'
+      - fetch_detail: human-readable explanation of what happened
+      - fetch_url: the resolved URL we attempted (for retry), or None
+    """
+    contents = doc_ref.get("content", [])
+    if not contents:
+        return None, "no_attachment", "DocumentReference has no content array", None
+
+    for content in contents:
         attachment = content.get("attachment", {})
 
         # Inline data (base64 encoded)
@@ -187,24 +200,61 @@ def extract_note_content(doc_ref: dict, base_url: str, token: str) -> str | None
             decoded = base64.b64decode(attachment["data"])
             content_type = attachment.get("contentType", "")
             if "text" in content_type or "html" in content_type:
-                return decoded.decode("utf-8", errors="replace")
-            # Binary content — store raw
-            return decoded.decode("utf-8", errors="replace")
+                text = decoded.decode("utf-8", errors="replace")
+                if text.strip():
+                    return text, "ok", None, None
+                else:
+                    return None, "empty", "Inline data decoded but was empty/whitespace", None
+            text = decoded.decode("utf-8", errors="replace")
+            if text.strip():
+                return text, "ok", None, None
+            else:
+                return None, "empty", "Inline data decoded but was empty/whitespace", None
 
         # URL reference — fetch it
         if "url" in attachment:
+            fetch_url = attachment["url"]
+            # Resolve relative URLs against the FHIR base
+            if not fetch_url.startswith("http"):
+                fetch_url = f"{base_url.rstrip('/')}/{fetch_url}"
+
             try:
                 headers = {
                     "Authorization": f"Bearer {token}",
                     "Accept": attachment.get("contentType", "text/plain"),
                 }
-                resp = requests.get(attachment["url"], headers=headers, timeout=30)
-                if resp.status_code == 200:
-                    return resp.text
-            except requests.RequestException:
-                pass
+                resp = requests.get(fetch_url, headers=headers, timeout=30)
+                if resp.status_code == 200 and resp.text.strip():
+                    return resp.text, "ok", None, None
+                elif resp.status_code == 200:
+                    return None, "empty", "Binary fetched OK but body was empty", fetch_url
+                else:
+                    # Try to extract OperationOutcome diagnostic from error response
+                    error_body = ""
+                    try:
+                        outcome = resp.json()
+                        issues = outcome.get("issue", [])
+                        if issues:
+                            error_body = "; ".join(
+                                i.get("diagnostics", i.get("details", {}).get("text", ""))
+                                for i in issues if i.get("diagnostics") or i.get("details")
+                            )
+                    except (ValueError, AttributeError):
+                        body_text = resp.text.strip()
+                        if body_text:
+                            error_body = body_text[:200]
 
-    return None
+                    detail = f"HTTP {resp.status_code}"
+                    if error_body:
+                        detail += f" — {error_body}"
+                    print(f"    ⚠ Note content fetch failed: {detail} ({attachment['url']})")
+                    return None, "fetch_failed", detail, fetch_url
+            except requests.RequestException as e:
+                detail = f"Request error: {e}"
+                print(f"    ⚠ Note content fetch failed: {detail} ({attachment['url']})")
+                return None, "fetch_failed", detail, fetch_url
+
+    return None, "no_attachment", "Attachments present but no data or url fields found", None
 
 
 def store_labs(db, labs: list, provider: str):
@@ -235,39 +285,123 @@ def store_labs(db, labs: list, provider: str):
     print(f"  → Stored {stored} lab results")
 
 
-def store_diagnostic_obs(db, diagnostic_obs: list, provider: str):
-    """Store diagnostic/pathology text observations in the database."""
+def store_diagnostic_reports(db, reports: list, provider: str, base_url: str, token: str):
+    """Store DiagnosticReport resources in the database, fetching presentedForm content."""
     cursor = db.cursor()
     stored = 0
+    fetch_failures = 0
 
-    for obs in diagnostic_obs:
-        fhir_id = obs.get("id", "")
-        code = obs.get("code", {}).get("text") or _get_coding_display(obs.get("code", {}))
-        # These are typically text-based reports (pathology, radiology narratives)
-        value_text = obs.get("valueString", "")
-        effective_date = obs.get("effectiveDateTime") or _get_period_start(obs.get("effectivePeriod"))
-        order = ""
-        based_on = obs.get("basedOn", [])
-        if based_on:
-            order = based_on[0].get("display", "")
+    for report in reports:
+        if report.get("resourceType") != "DiagnosticReport":
+            continue
+
+        fhir_id = report.get("id", "")
+        code = report.get("code", {}).get("text") or _get_coding_display(report.get("code", {}))
+        status = report.get("status", "")
+        effective_date = report.get("effectiveDateTime") or _get_period_start(report.get("effectivePeriod"))
+
+        # Collect result observation references
+        result_refs = [ref.get("reference", "") for ref in report.get("result", [])]
+        result_obs_ids = json.dumps(result_refs) if result_refs else None
+
+        # Fetch presentedForm content (similar to note attachments)
+        content_text, fetch_status, fetch_detail, fetch_url = _extract_report_content(
+            report, base_url, token
+        )
+
+        if fetch_status == "fetch_failed":
+            fetch_failures += 1
 
         cursor.execute("""
             INSERT OR REPLACE INTO diagnostic_reports
-            (fhir_id, provider, code_display, order_name, effective_date, value_text, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (fhir_id, provider, code_display, status, effective_date,
+             result_observation_ids, content_text,
+             content_fetch_status, content_fetch_detail, content_fetch_url, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            fhir_id, provider, code, order, effective_date, value_text, json.dumps(obs),
+            fhir_id, provider, code, status, effective_date,
+            result_obs_ids, content_text,
+            fetch_status, fetch_detail, fetch_url, json.dumps(report),
         ))
         stored += 1
 
     db.commit()
-    print(f"  → Stored {stored} diagnostic observations")
+    print(f"  → Stored {stored} diagnostic reports", end="")
+    if fetch_failures:
+        print(f" ({fetch_failures} with failed content fetch)")
+    else:
+        print()
+
+
+def _extract_report_content(report: dict, base_url: str, token: str) -> tuple[str | None, str, str | None, str | None]:
+    """
+    Extract presentedForm content from a DiagnosticReport.
+
+    Returns (content, fetch_status, fetch_detail, fetch_url).
+    """
+    presented_forms = report.get("presentedForm", [])
+    if not presented_forms:
+        return None, "no_attachment", None, None
+
+    for attachment in presented_forms:
+        # Inline data
+        if "data" in attachment:
+            decoded = base64.b64decode(attachment["data"])
+            text = decoded.decode("utf-8", errors="replace")
+            if text.strip():
+                return text, "ok", None, None
+            else:
+                return None, "empty", "Inline data decoded but was empty/whitespace", None
+
+        # URL reference
+        if "url" in attachment:
+            fetch_url = attachment["url"]
+            if not fetch_url.startswith("http"):
+                fetch_url = f"{base_url.rstrip('/')}/{fetch_url}"
+
+            try:
+                headers = {
+                    "Authorization": f"Bearer {token}",
+                    "Accept": attachment.get("contentType", "text/plain"),
+                }
+                resp = requests.get(fetch_url, headers=headers, timeout=30)
+                if resp.status_code == 200 and resp.text.strip():
+                    return resp.text, "ok", None, None
+                elif resp.status_code == 200:
+                    return None, "empty", "Binary fetched OK but body was empty", fetch_url
+                else:
+                    error_body = ""
+                    try:
+                        outcome = resp.json()
+                        issues = outcome.get("issue", [])
+                        if issues:
+                            error_body = "; ".join(
+                                i.get("diagnostics", i.get("details", {}).get("text", ""))
+                                for i in issues if i.get("diagnostics") or i.get("details")
+                            )
+                    except (ValueError, AttributeError):
+                        body_text = resp.text.strip()
+                        if body_text:
+                            error_body = body_text[:200]
+
+                    detail = f"HTTP {resp.status_code}"
+                    if error_body:
+                        detail += f" — {error_body}"
+                    print(f"    ⚠ Report content fetch failed: {detail} ({attachment['url']})")
+                    return None, "fetch_failed", detail, fetch_url
+            except requests.RequestException as e:
+                detail = f"Request error: {e}"
+                print(f"    ⚠ Report content fetch failed: {detail} ({attachment['url']})")
+                return None, "fetch_failed", detail, fetch_url
+
+    return None, "no_attachment", "presentedForm present but no data or url fields found", None
 
 
 def store_notes(db, notes: list, provider: str, base_url: str, token: str):
     """Store clinical notes in the database."""
     cursor = db.cursor()
     stored = 0
+    fetch_failures = 0
 
     for note in notes:
         fhir_id = note.get("id", "")
@@ -276,21 +410,29 @@ def store_notes(db, notes: list, provider: str, base_url: str, token: str):
         status = note.get("status", "")
         author = _extract_author(note)
 
-        # Extract the actual note text
-        content_text = extract_note_content(note, base_url, token)
+        # Extract the actual note text (with status tracking)
+        content_text, fetch_status, fetch_detail, fetch_url = extract_note_content(note, base_url, token)
+
+        if fetch_status == "fetch_failed":
+            fetch_failures += 1
 
         cursor.execute("""
             INSERT OR REPLACE INTO notes
-            (fhir_id, provider, doc_type, author, date, status, content_text, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (fhir_id, provider, doc_type, author, date, status, content_text,
+             content_fetch_status, content_fetch_detail, content_fetch_url, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             fhir_id, provider, doc_type, author, date, status,
-            content_text, json.dumps(note),
+            content_text, fetch_status, fetch_detail, fetch_url, json.dumps(note),
         ))
         stored += 1
 
     db.commit()
-    print(f"  → Stored {stored} clinical notes")
+    print(f"  → Stored {stored} clinical notes", end="")
+    if fetch_failures:
+        print(f" ({fetch_failures} with failed content fetch)")
+    else:
+        print()
 
 
 # --- Helper functions ---
@@ -409,8 +551,8 @@ def main():
 
         store_labs(db, labs, provider_name)
 
-        # Store diagnostic observations (text-based reports like pathology)
-        store_diagnostic_obs(db, diagnostic_obs, provider_name)
+        # Store diagnostic reports (metadata + presentedForm content)
+        store_diagnostic_reports(db, reports, provider_name, base_url, access_token)
 
         # Pull notes
         notes = pull_notes(base_url, patient_id, access_token, since)
@@ -424,7 +566,6 @@ def main():
                 "labs": labs,
                 "notes": notes,
                 "reports": reports,
-                "diagnostic_obs": diagnostic_obs,
             }, f, indent=2)
 
         print(f"\n✓ Done. Raw data saved to {RAW_PULLS_DIR}/")

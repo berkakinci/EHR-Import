@@ -26,8 +26,8 @@ EHRs into a local, queryable database for personal health tracking and research.
 | Data Type | FHIR Resource | Storage |
 |-----------|--------------|---------|
 | Lab results | Observation (category: laboratory) | `labs` table |
-| Clinical notes | DocumentReference (category: clinical-note) | `notes` table |
-| Diagnostic reports | DiagnosticReport + Observation (pathology/radiology) | `diagnostic_reports` table |
+| Clinical notes | DocumentReference (category: clinical-note) | `notes` table (with content fetch tracking) |
+| Diagnostic reports | DiagnosticReport (presentedForm + result refs) | `diagnostic_reports` table (with content fetch tracking) |
 
 ### Secondary (registered, not yet pulled)
 
@@ -54,6 +54,8 @@ EHRs into a local, queryable database for personal health tracking and research.
 - Raw FHIR JSON preserved alongside structured tables
 - Per-provider partitioning via `provider` column
 - Sync log for tracking pull history
+- Content fetch status tracking on notes and reports (status, detail, URL for retry)
+- OperationOutcome resources filtered from FHIR Bundle entries before storage
 
 ## Privacy Model
 

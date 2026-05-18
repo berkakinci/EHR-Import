@@ -45,6 +45,9 @@ def init_db():
             date TEXT,
             status TEXT,
             content_text TEXT,
+            content_fetch_status TEXT DEFAULT 'ok',
+            content_fetch_detail TEXT,
+            content_fetch_url TEXT,
             raw_json TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -54,9 +57,13 @@ def init_db():
             fhir_id TEXT UNIQUE NOT NULL,
             provider TEXT NOT NULL,
             code_display TEXT,
-            order_name TEXT,
+            status TEXT,
             effective_date TEXT,
-            value_text TEXT,
+            result_observation_ids TEXT,
+            content_text TEXT,
+            content_fetch_status TEXT DEFAULT 'ok',
+            content_fetch_detail TEXT,
+            content_fetch_url TEXT,
             raw_json TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
