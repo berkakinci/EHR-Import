@@ -22,6 +22,17 @@ def init_db():
     cursor = conn.cursor()
 
     cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS patients (
+            patient_id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            given_name TEXT,
+            family_name TEXT,
+            birth_date TEXT,
+            raw_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE TABLE IF NOT EXISTS labs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             fhir_id TEXT NOT NULL,

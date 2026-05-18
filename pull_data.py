@@ -68,6 +68,53 @@ def get_all_pages(base_url: str, resource_path: str, token: str, params: dict = 
     return entries
 
 
+def fetch_patient_demographics(base_url: str, patient_id: str, token: str) -> dict | None:
+    """Fetch the Patient resource to get name and demographics."""
+    try:
+        patient = fhir_get(base_url, f"Patient/{patient_id}", token)
+        return patient
+    except Exception as e:
+        print(f"  ⚠ Could not fetch Patient resource: {e}")
+        return None
+
+
+def store_patient(db, patient_resource: dict, provider: str, patient_id: str):
+    """Store or update patient demographics in the database."""
+    if not patient_resource:
+        return
+
+    # Extract name (use first "official" or first available name)
+    given_name = None
+    family_name = None
+    for name in patient_resource.get("name", []):
+        given_parts = name.get("given", [])
+        family = name.get("family")
+        if given_parts or family:
+            given_name = " ".join(given_parts) if given_parts else None
+            family_name = family
+            if name.get("use") == "official":
+                break  # Prefer official name
+
+    birth_date = patient_resource.get("birthDate")
+
+    cursor = db.cursor()
+    cursor.execute("""
+        INSERT INTO patients (patient_id, provider, given_name, family_name, birth_date, raw_json, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(patient_id) DO UPDATE SET
+            given_name = excluded.given_name,
+            family_name = excluded.family_name,
+            birth_date = excluded.birth_date,
+            raw_json = excluded.raw_json,
+            updated_at = CURRENT_TIMESTAMP
+    """, (
+        patient_id, provider, given_name, family_name, birth_date,
+        json.dumps(patient_resource),
+    ))
+    db.commit()
+    print(f"  Patient: {given_name or '?'} {family_name or '?'} (DOB: {birth_date or 'unknown'})")
+
+
 def pull_labs(base_url: str, patient_id: str, token: str, since: str = None) -> list:
     """Pull laboratory Observations."""
     params = {
@@ -540,6 +587,10 @@ def main():
     db = get_db()
 
     try:
+        # Fetch and store patient demographics
+        patient_resource = fetch_patient_demographics(base_url, patient_id, access_token)
+        store_patient(db, patient_resource, provider_name, patient_id)
+
         # Pull labs
         labs = pull_labs(base_url, patient_id, access_token, since)
 
