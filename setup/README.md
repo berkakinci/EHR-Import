@@ -5,25 +5,21 @@ Helper scripts for getting EHR Import running from scratch.
 ## Quick Start
 
 ```bash
-# 1. Create conda environment and install dependencies
+# 1. (Optional) Set up a virtual environment first
+python3 -m venv .venv && source .venv/bin/activate
+# — or —
+conda create -n ehr-import python=3.12 && conda activate ehr-import
+
+# 2. Run setup (installs deps, generates cert, verifies config)
 bash setup/setup_env.sh
 
-# 2. Activate the environment
-conda activate ehr-import
-
-# 3. Verify everything is configured correctly
-python setup/verify_setup.py
-
-# 4. Generate the HTTPS certificate for the OAuth callback
-python setup/generate_cert.py
-
-# 5. Discover your providers' FHIR endpoints
+# 3. Discover your providers' FHIR endpoints
 python discover_endpoints.py
 
-# 6. Authenticate with a provider (opens browser)
+# 4. Authenticate with a provider (opens browser)
 python auth.py "Boston Children's Hospital"
 
-# 7. Pull your data
+# 5. Pull your data
 python pull_data.py "Boston Children's Hospital"
 ```
 
@@ -31,13 +27,13 @@ python pull_data.py "Boston Children's Hospital"
 
 | Script | Purpose |
 |--------|---------|
-| `setup_env.sh` | Creates conda env, installs Python packages |
-| `generate_cert.py` | Creates self-signed TLS cert for localhost callback |
+| `setup_env.sh` | Installs Python packages, initializes data dir, generates TLS cert |
+| `generate_cert.py` | Creates self-signed TLS cert for localhost callback (also run by setup_env.sh) |
 | `verify_setup.py` | Checks that everything is configured correctly |
 
 ## Prerequisites
 
-- [Anaconda](https://www.anaconda.com/) or [Miniconda](https://docs.conda.io/en/latest/miniconda.html)
+- Python 3.11+
 - A MyChart account with one of the configured providers
 - The app's client ID is already in `config.json` (included in the repo)
 
