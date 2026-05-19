@@ -47,6 +47,7 @@ flowchart TD
 
 - **Configurable data directory** — private data lives outside the repo (default sibling dir)
 - **Per-provider tokens** — each provider gets its own token record; supports multiple EHRs
+- **Multi-patient token store** — tokens keyed by `provider:patient_id`; re-auth for a different patient accumulates (doesn't overwrite); `pull_data.py` pulls all patients by default
 - **Multi-patient support** — `patient_id` column on all data tables; supports pulling records for family members via proxy access
 - **Lab/report deduplication** — cross-references DiagnosticReport results against Observations to avoid double-counting (pattern from FetchMyEpicToken)
 - **OperationOutcome filtering** — Epic sometimes includes OperationOutcome resources in Bundle entries (e.g., parameter warnings); these are filtered out before storage
@@ -118,7 +119,8 @@ After marking an app "Ready for Production" on open.epic.com:
 2. The developer must activate each download via "Review & Manage Downloads"
 3. Non-production must be activated before production
 4. With JWK Set URL auth, select "JWK Set URL (Recommended)" — it uses the app-level URL
-5. There may be a sync delay (up to 1 business day) before the org recognizes the client ID
+5. Leave "Use App-level Endpoint URIs" checked unless redirect URIs vary per org (our single localhost redirect works fine at app level)
+6. There may be a sync delay (up to 1 business day) before the org recognizes the client ID
 
 ## Adding a New Provider
 
@@ -146,10 +148,6 @@ USE_SANDBOX=true python pull_data.py "Epic Sandbox"
 ```
 
 Uses the non-production client ID. Sandbox test credentials: `fhircamila` / `epicepic1`.
-
-Note: The sandbox does not serve Binary resource content (returns 403), so clinical
-notes and diagnostic report attachments will show `content_fetch_status = 'fetch_failed'`.
-This is expected — production endpoints serve the actual content.
 
 ## Dependencies
 

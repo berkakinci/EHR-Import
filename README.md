@@ -21,10 +21,13 @@ python discover_endpoints.py
 # 4. Authenticate (opens browser for MyChart login)
 python auth.py "Boston Children's Hospital"
 
-# 5. Pull your records
+# 5. Pull your records (all authorized patients at this provider)
 python pull_data.py "Boston Children's Hospital"
 
-# 6. Pull only new records since a date
+# 6. Pull a specific patient only
+python pull_data.py "Boston Children's Hospital" --patient <patient_id>
+
+# 7. Pull only new records since a date
 python pull_data.py "Boston Children's Hospital" --since 2024-06-01
 ```
 

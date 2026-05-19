@@ -406,40 +406,85 @@ def _load_client_secret() -> str | None:
 
 # --- Token persistence ---
 
+def _token_key(provider_name: str, patient_id: str) -> str:
+    """Build the token store key: 'provider:patient_id'."""
+    return f"{provider_name}:{patient_id}"
+
+
 def save_tokens(provider_name: str, token_record: dict):
-    """Save tokens to local file (per-provider)."""
+    """Save tokens to local file (per-provider, per-patient)."""
     all_tokens = {}
     if TOKEN_STORE.exists():
         with open(TOKEN_STORE) as f:
             all_tokens = json.load(f)
 
-    all_tokens[provider_name] = token_record
+    patient_id = token_record.get("patient")
+    key = _token_key(provider_name, patient_id)
+
+    # Note if there are existing tokens for other patients at this provider
+    existing_patients = [
+        t.get("patient")
+        for k, t in all_tokens.items()
+        if t.get("provider") == provider_name and t.get("patient") != patient_id
+    ]
+    if existing_patients:
+        print(f"  ℹ Keeping existing token(s) for {len(existing_patients)} other patient(s) at {provider_name}")
+
+    all_tokens[key] = token_record
 
     with open(TOKEN_STORE, "w") as f:
         json.dump(all_tokens, f, indent=2)
 
 
-def load_tokens(provider_name: str) -> dict | None:
-    """Load saved tokens for a provider."""
+def load_tokens(provider_name: str, patient_id: str | None = None) -> dict | None:
+    """
+    Load saved tokens for a provider (and optionally a specific patient).
+
+    If patient_id is None, returns the first token found for that provider.
+    """
     if not TOKEN_STORE.exists():
         return None
 
     with open(TOKEN_STORE) as f:
         all_tokens = json.load(f)
 
-    return all_tokens.get(provider_name)
+    # Exact match
+    if patient_id:
+        key = _token_key(provider_name, patient_id)
+        return all_tokens.get(key)
+
+    # Find first token matching this provider
+    for key, record in all_tokens.items():
+        if record.get("provider") == provider_name:
+            return record
+
+    return None
+
+
+def load_all_tokens_for_provider(provider_name: str) -> list[dict]:
+    """Load all saved tokens for a provider (all patients)."""
+    if not TOKEN_STORE.exists():
+        return []
+
+    with open(TOKEN_STORE) as f:
+        all_tokens = json.load(f)
+
+    return [
+        record for record in all_tokens.values()
+        if record.get("provider") == provider_name
+    ]
 
 
 # --- Token refresh (confidential client only) ---
 
-def refresh_access_token(provider_name: str) -> dict:
+def refresh_access_token(provider_name: str, patient_id: str | None = None) -> dict:
     """
     Use refresh token to get a new access token.
 
     Only available for confidential clients (jwt or secret).
     Public clients must re-authorize.
     """
-    tokens = load_tokens(provider_name)
+    tokens = load_tokens(provider_name, patient_id)
     auth_method = _detect_auth_method()
 
     if not tokens or not tokens.get("refresh_token"):

@@ -13,7 +13,7 @@ from datetime import datetime
 import requests
 
 from config import RAW_PULLS_DIR, DB_PATH
-from auth import load_tokens, refresh_access_token
+from auth import load_tokens, load_all_tokens_for_provider, refresh_access_token
 from db import get_db, init_db
 
 
@@ -547,32 +547,15 @@ def _extract_author(doc_ref: dict) -> str | None:
     return None
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python pull_data.py <provider_name> [--since YYYY-MM-DD]")
-        sys.exit(1)
-
-    provider_name = sys.argv[1]
-    since = None
-    if "--since" in sys.argv:
-        since_idx = sys.argv.index("--since") + 1
-        if since_idx < len(sys.argv):
-            since = sys.argv[since_idx]
-
-    # Load tokens
-    tokens = load_tokens(provider_name)
-    if not tokens:
-        print(f"No tokens for '{provider_name}'. Run: python auth.py \"{provider_name}\"")
-        sys.exit(1)
-
+def pull_for_patient(provider_name: str, tokens: dict, since: str = None):
+    """Pull all data for a single patient using the given tokens."""
     access_token = tokens["access_token"]
     base_url = tokens["fhir_base_url"]
     patient_id = tokens.get("patient")
 
     if not patient_id:
-        print("No patient ID in token response. Fetching from Patient resource...")
-        # Try to get patient ID from the token's fhirUser claim
-        patient_id = "self"  # Some Epic endpoints accept 'self'
+        print("No patient ID in token response.")
+        return
 
     print(f"\n{'='*60}")
     print(f"Pulling data from: {provider_name}")
@@ -612,7 +595,7 @@ def main():
         # Save raw data
         RAW_PULLS_DIR.mkdir(exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        with open(RAW_PULLS_DIR / f"{provider_name}_{timestamp}.json", "w") as f:
+        with open(RAW_PULLS_DIR / f"{provider_name}_{patient_id[:8]}_{timestamp}.json", "w") as f:
             json.dump({
                 "labs": labs,
                 "notes": notes,
@@ -625,7 +608,7 @@ def main():
     except PermissionError:
         print("\nToken expired. Attempting refresh...")
         try:
-            tokens = refresh_access_token(provider_name)
+            refreshed = refresh_access_token(provider_name, patient_id)
             print("Token refreshed. Please run again.")
         except Exception as e:
             print(f"Refresh failed: {e}")
@@ -633,6 +616,45 @@ def main():
 
     finally:
         db.close()
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python pull_data.py <provider_name> [--patient <patient_id>] [--since YYYY-MM-DD]")
+        sys.exit(1)
+
+    provider_name = sys.argv[1]
+    since = None
+    target_patient = None
+
+    if "--since" in sys.argv:
+        since_idx = sys.argv.index("--since") + 1
+        if since_idx < len(sys.argv):
+            since = sys.argv[since_idx]
+
+    if "--patient" in sys.argv:
+        patient_idx = sys.argv.index("--patient") + 1
+        if patient_idx < len(sys.argv):
+            target_patient = sys.argv[patient_idx]
+
+    if target_patient:
+        # Pull for a specific patient
+        tokens = load_tokens(provider_name, target_patient)
+        if not tokens:
+            print(f"No tokens for '{provider_name}' patient '{target_patient}'.")
+            print(f"Run: python auth.py \"{provider_name}\"")
+            sys.exit(1)
+        pull_for_patient(provider_name, tokens, since)
+    else:
+        # Pull for all patients at this provider
+        all_tokens = load_all_tokens_for_provider(provider_name)
+        if not all_tokens:
+            print(f"No tokens for '{provider_name}'. Run: python auth.py \"{provider_name}\"")
+            sys.exit(1)
+
+        print(f"Found {len(all_tokens)} patient(s) for {provider_name}")
+        for tokens in all_tokens:
+            pull_for_patient(provider_name, tokens, since)
 
 
 if __name__ == "__main__":
