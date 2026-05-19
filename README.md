@@ -4,6 +4,8 @@ Pull your personal health records (labs, clinical notes) from Epic-based EHRs (E
 
 Uses the FHIR R4 API with SMART on FHIR authentication — you log in with your MyChart credentials and the app downloads your data. Everything stays on your machine.
 
+No app registration needed — the included client ID works for any Epic MyChart system.
+
 ## Quick Start
 
 ```bash
@@ -25,6 +27,19 @@ python pull_data.py "Boston Children's Hospital"
 # 6. Pull only new records since a date
 python pull_data.py "Boston Children's Hospital" --since 2024-06-01
 ```
+
+## Authentication
+
+The app auto-detects which auth method to use based on what credential files exist:
+
+| Credential files present | Auth method | Refresh tokens |
+|--------------------------|-------------|----------------|
+| None (default) | Public client + PKCE | ✗ (re-login each session) |
+| `client_secret.txt` | Client secret | ✓ |
+| `jwk_private.pem` | JWT assertion | ✓ |
+
+For most users, the default public client works — just clone and run. For persistent
+access without re-login, see [DEVELOPMENT.md](docs/DEVELOPMENT.md) for confidential client setup.
 
 ## What You Get
 

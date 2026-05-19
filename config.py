@@ -36,10 +36,15 @@ DB_PATH = DATA_DIR / "ehr_data.db"
 TOKEN_STORE = DATA_DIR / "tokens.json"
 ENDPOINTS_FILE = DATA_DIR / "discovered_endpoints.json"
 RAW_PULLS_DIR = DATA_DIR / "raw_pulls"
+JWK_PRIVATE_KEY_PATH = DATA_DIR / "jwk_private.pem"
 
 # App config (public — safe to commit)
-CLIENT_ID = _config["client_id"]
-NON_PRODUCTION_CLIENT_ID = _config["non_production_client_id"]
+_active_app = _config.get("active_app", "public")
+_apps = _config.get("apps", {})
+_active_app_config = _apps.get(_active_app, {})
+
+CLIENT_ID = _active_app_config.get("client_id", _config.get("client_id", ""))
+NON_PRODUCTION_CLIENT_ID = _active_app_config.get("non_production_client_id", _config.get("non_production_client_id", ""))
 REDIRECT_URI = _config["redirect_uri"]
 SANDBOX_FHIR_BASE_URL = _config.get("sandbox_fhir_base_url", "")
 PROVIDERS = _config.get("providers", {})
@@ -60,6 +65,8 @@ def print_config():
     print(f"Client ID:         {ACTIVE_CLIENT_ID}")
     print(f"Sandbox mode:      {USE_SANDBOX}")
     print(f"Redirect URI:      {REDIRECT_URI}")
+    print(f"JWK private key:   {JWK_PRIVATE_KEY_PATH} ({'exists' if JWK_PRIVATE_KEY_PATH.exists() else 'missing'})")
+    print(f"Client secret:     {DATA_DIR / 'client_secret.txt'} ({'exists' if (DATA_DIR / 'client_secret.txt').exists() else 'missing'})")
     print(f"Providers:         {list(PROVIDERS.keys())}")
 
 

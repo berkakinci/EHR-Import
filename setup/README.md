@@ -29,6 +29,7 @@ python pull_data.py "Boston Children's Hospital"
 |--------|---------|
 | `setup_env.sh` | Installs Python packages, initializes data dir, generates TLS cert |
 | `generate_cert.py` | Creates self-signed TLS cert for localhost callback (also run by setup_env.sh) |
+| `generate_jwk.py` | Generates RSA key pair for JWT auth (confidential client only) |
 | `verify_setup.py` | Checks that everything is configured correctly |
 
 ## Prerequisites
@@ -49,5 +50,6 @@ Run `python setup/verify_setup.py` to diagnose issues. Common problems:
 
 - **"cryptography not installed"** — run `pip install -r requirements.txt`
 - **"No discovered endpoints"** — run `python discover_endpoints.py`
-- **"No client secret"** — create `../EHR Import Private/client_secret.txt` with your secret
 - **Browser cert warning** — expected for self-signed certs; click "Advanced" → "Proceed"
+- **"Token expired"** — for public clients, re-run `python auth.py "<provider>"` (no refresh tokens)
+- **Want refresh tokens?** — set up a confidential client (see `docs/registration-guide.md`)

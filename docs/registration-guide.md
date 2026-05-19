@@ -5,7 +5,9 @@
 To access your health records programmatically, you register a "patient-facing" app with Epic.
 This gives you a **client ID** that your local script uses to authenticate via your MyChart credentials.
 
-No approval process or review is needed for personal/non-production use.
+**You probably don't need to do this.** This project ships with a pre-registered public client ID
+that works for any Epic MyChart system — just clone and run. This guide is only for developers
+who want refresh tokens (confidential client) or want to fork the project under their own app registration.
 
 ## Step-by-Step
 
@@ -19,88 +21,144 @@ No approval process or review is needed for personal/non-production use.
   - Use a real email — you'll need to verify it.
 - Wait for the verification email, then log in.
 
-### 2. Create a new app
+### 2. Create a new app (page 1: "Create")
 
-- After logging in, go to **"Build Apps"** → **"Create"**
-- Fill in:
-  - **App Name**: anything (e.g., "My Health Records")
-  - **Application Audience**: select **"Patients"**
-  - **Incoming API**: select **"SMART on FHIR"** (not Backend Services)
+After logging in, go to **"Build Apps"** → **"Create"**. Fill in:
 
-### 3. Configure the app
+| Field | Value | Notes |
+|-------|-------|-------|
+| **Application Name** | e.g., "EHR Import" | Shown to patients during consent |
+| **Application Audience** | Patients | |
+| **Automatic Client Distribution** | USCDI v3 | Auto-distributes to all qualifying orgs on production |
+| **Public Documentation URL** | Your GitHub repo URL | Optional but recommended |
+| **Incoming APIs** | See [API Endpoints](#api-endpoints) below | Select from the Available → Selected list |
+| **Endpoint URI** | `https://localhost:9432/callback` | The OAuth redirect URI |
+| **Can Register Dynamic Clients** | ☐ unchecked | Not needed |
+| **Is Confidential Client** | ☐ or ☑ depending on your needs | See below |
 
-Key settings:
+**Confidential client decision:**
+- **Unchecked** (public client): No secrets needed, anyone can use the client ID, but no refresh tokens — access expires after ~1 hour and requires re-login. Best for open-source distribution.
+- **Checked** (confidential client): Requires a client secret or JWT key pair, enables refresh tokens. Best for persistent access and apps with server infrastructure.
+  - Checking this reveals additional options:
+  - **Requires Persistent Access** — ☑ check (enables refresh tokens)
+  - **Uses Rolling Refresh Tokens** — ☑ check (each refresh gives a new refresh token)
+  - **Can Have Indefinite Access** — not available for this app type
 
-| Field | Value |
-|-------|-------|
-| **SMART on FHIR Version** | R4 |
-| **Grant Type** | Authorization Code |
-| **Redirect URI** | `http://localhost:8080/callback` |
-| **Application Type** | Patient Access |
+Click **Save** to proceed to the Test page.
 
-### 4. Select FHIR Resources (Scopes)
+### 3. Additional settings (visible after Save or on confidential apps)
 
-Request these scopes for labs + notes:
+These fields appear on the same page depending on your choices:
 
-- `patient/Observation.read` — lab results, vitals
-- `patient/DiagnosticReport.read` — lab panels/reports
-- `patient/DocumentReference.read` — clinical notes
-- `patient/Patient.read` — demographics (needed for context)
-- `patient/Encounter.read` — visit context for notes
-- `patient/Condition.read` — problem list (useful context)
-- `launch/patient` — standalone patient launch
-- `openid fhirUser` — identity token
+| Field | Value | Notes |
+|-------|-------|-------|
+| **SMART on FHIR Version** | R4 | |
+| **SMART Scope Version** | SMART v1 | v2 adds PKCE requirement server-side |
+| **FHIR ID Generation Scheme** | Use Unconstrained FHIR IDs | Default; 64-char limit only for legacy systems |
+| **Summary** | Short description (≤500 chars) | Shown to patients/orgs |
+| **Description** | Longer explanation (≤1998 chars) | Why/What/How format recommended |
+| **Intended Purposes** | Individuals' Access to their EHI | Check applicable boxes |
+| **Intended Users** | Individual/Caregiver | Check applicable boxes |
 
-### 5. Select API Endpoints
+**Confidential client only:**
 
-Epic requires selecting specific API interactions. Select these R4 endpoints:
+| Field | Value | Notes |
+|-------|-------|-------|
+| **Requires Persistent Access** | ☑ | Enables refresh tokens |
+| **Uses Rolling Refresh Tokens** | ☑ | Each refresh gives a new refresh token |
+| **Can Have Indefinite Access** | Not available for this app type | |
+| **Non-Production JWK Set URL** | Your JWKS URL for sandbox | e.g., raw GitHub URL |
+| **Production JWK Set URL** | Your JWKS URL for production | e.g., raw GitHub URL |
+| **Sandbox Client Secret** | Generate or Store Hash | For client_secret auth method |
 
-**Search (for querying collections):**
-- Observation.Search (Labs) (R4)
-- Observation.Search (Vital Signs) (R4)
-- Observation.Search (Social History) (R4)
-- Observation.Search (Assessments) (R4)
+### 4. Test page
+
+After saving, you'll see your **Non-Production Client ID**. The app is now in Draft status.
+
+- Click **"Ready for Sandbox"** to enable sandbox testing
+- Changes take up to 1 hour to sync to the sandbox
+- Test with sandbox credentials: `fhircamila` / `epicepic1`
+
+### 5. Mark Ready for Production
+
+Once sandbox testing passes:
+
+1. Navigate back to your app on the Build Apps page
+2. Fill in any remaining required fields (summary, description, Data Use Questionnaire)
+3. Check the compliance checkbox
+4. Click **"Save and Ready for Production"**
+
+**Important:** After marking ready for production, you cannot change the app's API
+selections or most settings. You can still modify redirect URIs and JWK Set URLs.
+
+### 6. Production distribution
+
+After marking ready:
+
+- If you selected **USCDI v3** automatic distribution, Epic organizations will
+  automatically request your app. You'll see "Client ID Requests" appear.
+- Go to **"Review & Manage Downloads"** to activate each organization:
+  1. Activate for **Non-Production** first (required before production)
+  2. Then activate for **Production**
+  3. Each activation may take up to 12 hours (1 business day) to sync
+- For confidential clients, you'll need to provide credentials (client secret or JWK Set URL)
+  during activation.
+
+## API Endpoints
+
+Select these R4 endpoints in the "Incoming APIs" list (alphabetized):
+
+- AllergyIntolerance.Search (Patient Chart) (R4)
+- Binary.Read (Clinical Notes) (R4)
+- Binary.Read (Labs) (R4)
+- Binary.Read (Study) (R4)
+- Binary.Search (Study) (R4)
+- Condition.Search (Care Plan Problem) (R4)
+- Condition.Search (Encounter Diagnosis) (R4)
+- Condition.Search (Health Concerns) (R4)
+- Condition.Search (Problems) (R4)
 - DiagnosticReport.Search (Results) (R4)
 - DocumentReference.Search (Clinical Notes) (R4)
 - DocumentReference.Search (Labs) (R4)
 - Encounter.Search (Patient Chart) (R4)
-- Condition.Search (Problems) (R4)
-- Condition.Search (Encounter Diagnosis) (R4)
-- Condition.Search (Health Concerns) (R4)
-- Condition.Search (Care Plan Problem) (R4)
-- AllergyIntolerance.Search (Patient Chart) (R4)
+- Media.Read (Study) (R4)
+- Media.Search (Study) (R4)
 - MedicationRequest.Search (Signed Medication Order) (R4)
+- Observation.Read (Labs) (R4)
+- Observation.Read (Study Finding) (R4)
+- Observation.Read (Vital Signs) (R4)
+- Observation.Search (Assessments) (R4)
+- Observation.Search (Labs) (R4)
+- Observation.Search (Social History) (R4)
+- Observation.Search (Study Finding) (R4)
+- Observation.Search (Vital Signs) (R4)
+- Patient.Read (Demographics) (R4)
 - Patient.Search (Demographics) (R4)
-
-**Read (for fetching individual resources by ID):**
-- Patient.Read (Demographics) (R4) — patient name/DOB lookup
-- Observation.Read (Labs) (R4) — dedup cross-references from DiagnosticReports
-- Observation.Read (Vital Signs) (R4) — individual vital sign reads
-- Observation.Read (Study Finding) (R4) — structured imaging findings
-- Binary.Read (Clinical Notes) (R4) — note content (HTML/RTF attachments)
-- Binary.Read (Labs) (R4) — lab report document content
-- Binary.Read (Study) (R4) — imaging study content (DICOM)
-- Media.Read (Study) (R4) — imaging media references
-- Media.Search (Study) (R4) — find imaging studies
-- Binary.Search (Study) (R4) — find imaging binary content
-- Observation.Search (Study Finding) (R4) — find imaging findings
 
 > **Note:** Without the Binary.Read endpoints, note and report content will return 403.
 > Without Observation.Read (Labs), the dedup logic cannot fetch referenced observations.
 > These are separate from the Search endpoints — both are needed.
 
-### 6. Save and note your Client ID
+## Scopes
 
-After saving, Epic gives you a **Non-Production Client ID** immediately.
-This works against any Epic sandbox and (importantly) against real MyChart endpoints
-for patient-access apps under the Cures Act.
+The app requests these OAuth scopes during authorization:
 
-You do NOT need a "production" review for personal patient access — the non-production
-client ID works for accessing your own records via MyChart login.
+```
+openid fhirUser launch/patient
+patient/Patient.read
+patient/Observation.read
+patient/DiagnosticReport.read
+patient/DocumentReference.read
+patient/Encounter.read
+patient/Condition.read
+```
 
-### 7. Find your provider's FHIR endpoint
+You don't configure scopes during registration — they're requested at runtime in the
+authorization URL. Epic grants them based on which APIs are selected on the app registration.
 
-Each health system publishes a FHIR base URL. You can discover it from the MyChart URL:
+## Finding Your Provider's FHIR Endpoint
+
+Each health system publishes a FHIR base URL. Discover it from the MyChart URL:
 
 ```
 https://<mychart-host>/MyChart/.well-known/smart-configuration
@@ -108,24 +166,12 @@ https://<mychart-host>/MyChart/.well-known/smart-configuration
 
 Or look it up on: https://open.epic.com/MyApps/Endpoints
 
-For our providers:
-- Boston Children's: check `https://mychart.childrenshospital.org/MyChart/.well-known/smart-configuration`
-- Tufts Medicine: check `https://mytuftsmed.org/MyChartPRD/.well-known/smart-configuration`
-- CHPPOC: check `https://mychart.chppoc.org/MyChart/.well-known/smart-configuration`
-
 The `discover_endpoints.py` script automates this.
-
-## Notes
-
-- The OAuth flow opens a browser window where you log in with your MyChart credentials
-- Tokens are short-lived (usually 1 hour) with a refresh token for ongoing access
-- Epic's patient-access API is rate-limited but generous for personal use
-- All data returned is YOUR data — no special permissions needed beyond your MyChart login
 
 ## Programmatic Access to Epic API Specifications
 
-The fhir.epic.com website loads content dynamically with JavaScript, but the underlying data is available via JSON endpoints.
-No authentication is required for the catalog; individual spec details require a session cookie from the site.
+The fhir.epic.com website loads content dynamically with JavaScript, but the underlying
+data is available via JSON endpoints.
 
 ### API Catalog (no auth required)
 
@@ -137,11 +183,8 @@ Returns a JSON object with `Data.Items[]` — the full list of 696+ APIs with me
 - `Id` — numeric API identifier
 - `Name` — e.g., "Binary.Read (Clinical Notes) (R4)"
 - `API_GroupName` — grouping (e.g., "Clinical Notes Document Group")
-- `API_ALaCarteName` — licensing tier (e.g., "Industry-Standard Level 1 Group")
-- `Categories` — functional categories
+- `API_ALaCarteName` — licensing tier
 - `IsUSCDI` — whether it's part of USCDI certification
-- `HasRequest` — whether Try It examples are available
-- `IsFhir` — true for FHIR APIs, false for Epic proprietary
 
 ### Individual API Spec (session cookie required)
 
@@ -149,17 +192,6 @@ Returns a JSON object with `Data.Items[]` — the full list of 696+ APIs with me
 GET https://fhir.epic.com/Specifications/Api?id={ID}
 Cookie: <session cookies>
 ```
-
-Returns full spec details including:
-- `Description` — HTML description of the API
-- `UrlTemplate` — e.g., "api/FHIR/R4/Binary/{ID}"
-- `SampleRequest` / `SampleResponse` — example calls
-- `Parameters` — request/response schema
-- `PerformsScopeValidation` — whether the API checks OAuth scopes independently
-- `UsageScopes` — which access contexts are supported
-- `SupportsOAuth2` — OAuth2 support flag
-- `Errors` — documented error conditions
-- `ChangeLog` — version history
 
 No login is required — visiting the site sets the necessary session cookies automatically.
 
@@ -170,15 +202,12 @@ curl -s -c epic_cookies.txt 'https://fhir.epic.com/Specifications/Selections' -o
 # Use the cookie to fetch any API spec by ID
 curl -s -b epic_cookies.txt 'https://fhir.epic.com/Specifications/Api?id=1044'   # Binary.Read (Clinical Notes)
 curl -s -b epic_cookies.txt 'https://fhir.epic.com/Specifications/Api?id=931'    # Patient.Read (Demographics)
-curl -s -b epic_cookies.txt 'https://fhir.epic.com/Specifications/Api?id=10139'  # Binary.Read (Labs)
 ```
 
 ### Key Findings from Spec Data
 
 - **Binary resources do NOT perform scope validation** (`PerformsScopeValidation: false`).
-  Access is controlled by the app registration (having the API selected), not by an OAuth scope in the token.
+  Access is controlled by the app registration (having the API selected), not by an OAuth scope.
   There is no `patient/Binary.read` scope — requesting it will break the OAuth flow.
-- **Binary.Read and DocumentReference.Read (Clinical Notes)** are in the same API group ("Clinical Notes Document Group").
-  Selecting one in the app registration typically includes the other.
 - **Sandbox sync delay**: Changes to app registration take up to 1 hour to propagate to the sandbox.
-  This is a common source of 403 errors immediately after adding new APIs.
+- **Production sync delay**: Activation of org downloads takes up to 12 hours (1 business day).

@@ -47,9 +47,12 @@ EHRs into a local, queryable database for personal health tracking and research.
 ## Authentication
 
 - SMART on FHIR standalone patient launch (OAuth2 authorization code)
-- Confidential client with client secret
-- Rolling refresh tokens for persistent access
+- Three auth methods supported (auto-detected from credential files):
+  - **Public client** (default): PKCE (S256), no secrets, no refresh tokens — for open-source use
+  - **Client secret**: confidential client with shared secret, refresh tokens
+  - **JWT assertion** (private_key_jwt): confidential client with RSA key pair, refresh tokens
 - HTTPS localhost callback (self-signed cert)
+- Two registered apps: public (shared client ID) and confidential (personal use)
 
 ## Data Storage
 

@@ -25,11 +25,17 @@ flowchart TD
 | File | Role |
 |------|------|
 | `config.py` | Central config: loads `config.json` + `.env`, resolves all paths |
-| `config.json` | Public config: client IDs, redirect URI, provider list |
-| `auth.py` | OAuth2 authorization code flow with HTTPS callback server |
+| `config.json` | Public config: app client IDs, redirect URI, provider list, active app selector |
+| `auth.py` | OAuth2 authorization code flow (public/secret/JWT), HTTPS callback server |
 | `pull_data.py` | FHIR data fetching, deduplication, storage |
 | `db.py` | SQLite schema, connection management |
 | `discover_endpoints.py` | Probes MyChart URLs to find FHIR base/auth/token endpoints |
+| `jwks.json` | Public key (JWKS) for JWT auth — production |
+| `jwks-nonprod.json` | Public key (JWKS) for JWT auth — non-production |
+| `setup/generate_jwk.py` | Generates RSA key pair for JWT auth |
+| `setup/generate_cert.py` | Generates self-signed cert for HTTPS callback |
+| `setup/setup_env.sh` | Conda environment setup |
+| `setup/verify_setup.py` | Validates configuration and dependencies |
 
 ## Data Flow
 
@@ -45,9 +51,74 @@ flowchart TD
 - **Lab/report deduplication** — cross-references DiagnosticReport results against Observations to avoid double-counting (pattern from FetchMyEpicToken)
 - **OperationOutcome filtering** — Epic sometimes includes OperationOutcome resources in Bundle entries (e.g., parameter warnings); these are filtered out before storage
 - **HTTPS callback with retry loop** — Epic requires secure redirect URIs; the callback server loops to survive browser cert warnings and preflight requests on first use
-- **Confidential client** — enables refresh tokens for ongoing access without re-auth
+- **Dual auth support** — public client (PKCE, no secrets) for open-source distribution; confidential client (JWT assertion) for personal use with refresh tokens
 - **Raw JSON preservation** — every pull saves raw FHIR responses alongside structured DB storage
 - **Content fetch tracking** — notes and diagnostic reports track fetch status (`ok`, `fetch_failed`, `empty`, `no_attachment`) with the resolved URL, enabling automated retry of failed fetches
+
+## Authentication Methods
+
+The app supports two OAuth2 client types. Which one is active is determined by `client_type`
+in `config.json` (`"public"` or `"confidential"`).
+
+### Public Client (default for open-source use)
+
+- No client secret or key pair needed — just the client ID
+- Uses PKCE (S256 code challenge) for security
+- Anyone can clone the repo and use it immediately
+- **Tradeoff:** No refresh tokens. Access tokens expire (~1 hour), requiring re-login.
+  Acceptable for a "download my data" tool that runs occasionally.
+- Token exchange sends: `client_id` + `code` + `redirect_uri` + `code_verifier`
+
+### Confidential Client (advanced use)
+
+- Requires a registered app with the "confidential client" profile enabled
+- Authenticates to the token endpoint using a signed JWT (`private_key_jwt`)
+- **Enables refresh tokens** — access persists across sessions without re-login
+- Token exchange sends: `client_id` + `code` + `redirect_uri` + `client_assertion`
+
+#### JWT Assertion Flow (private_key_jwt)
+
+Instead of a client secret, the app signs a short-lived JWT with an RSA private key.
+Epic verifies it against the public key hosted at the app's registered JWK Set URL.
+
+1. Generate an RSA key pair (one-time setup via `setup/generate_jwk.py`)
+2. Host the public key as a JWKS file (e.g., raw GitHub URL or any HTTPS endpoint)
+3. Register the JWK Set URL on open.epic.com
+4. At token exchange, the app builds a JWT with:
+   - `iss`: client ID
+   - `sub`: client ID
+   - `aud`: token endpoint URL
+   - `jti`: unique UUID
+   - `exp`: current time + 5 minutes
+5. Signs it with RS384 and sends as `client_assertion`
+
+The private key lives in `DATA_DIR/jwk_private.pem` (gitignored).
+The public JWKS lives in the public repo at `jwks.json`.
+
+#### Why JWK Set URL over Client Secret
+
+- Epic hashes client secrets — you can't retrieve them after generation
+- Secrets are per-organization (each org download needs its own secret)
+- JWK Set URL is set once at the app level and works for all organizations
+- Epic recommends JWK Set URL and is deprecating other methods for backend apps
+
+### Why Two Client Types?
+
+Epic's model requires each developer to register their own app. For an open-source tool
+whose purpose is helping patients access their own data, this creates unacceptable friction.
+
+The public client path eliminates all credential management — users just need the shared
+client ID (published in the repo). The confidential path exists for developers who want
+refresh tokens and are willing to register their own app.
+
+### Production Distribution (Confidential Client)
+
+After marking an app "Ready for Production" on open.epic.com:
+1. Epic organizations request to download the app (happens automatically for qualifying apps)
+2. The developer must activate each download via "Review & Manage Downloads"
+3. Non-production must be activated before production
+4. With JWK Set URL auth, select "JWK Set URL (Recommended)" — it uses the app-level URL
+5. There may be a sync delay (up to 1 business day) before the org recognizes the client ID
 
 ## Adding a New Provider
 
@@ -89,7 +160,9 @@ This is expected — production endpoints serve the actual content.
 
 ## App Registration
 
-The included client ID works for anyone. If you want to register your own app
+The included public client ID works for anyone — no registration needed.
+
+If you want refresh tokens (confidential client) or want to register your own app
 (e.g., forking this project), see [registration-guide.md](registration-guide.md).
 
 ## Acknowledgments
