@@ -25,7 +25,7 @@ import requests
 
 from config import (
     TOKEN_STORE, ENDPOINTS_FILE, ACTIVE_CLIENT_ID, REDIRECT_URI, DATA_DIR,
-    JWK_PRIVATE_KEY_PATH,
+    JWK_PRIVATE_KEY_PATH, PROVIDERS,
 )
 
 # Scopes we need for labs + notes
@@ -282,6 +282,10 @@ def authorize(provider_name: str) -> dict:
     auth_endpoint = config["authorization_endpoint"]
     token_endpoint = config["token_endpoint"]
 
+    # Per-provider redirect URI override (e.g., for WAF workarounds)
+    provider_config = PROVIDERS.get(provider_name, {})
+    redirect_uri = provider_config.get("redirect_uri", REDIRECT_URI)
+
     # Generate state for CSRF protection
     state = secrets.token_urlsafe(32)
 
@@ -289,7 +293,7 @@ def authorize(provider_name: str) -> dict:
     auth_params = {
         "response_type": "code",
         "client_id": ACTIVE_CLIENT_ID,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "scope": SCOPES,
         "state": state,
         "aud": config.get("fhir_base_url", ""),
@@ -310,7 +314,7 @@ def authorize(provider_name: str) -> dict:
     print(f"If the browser doesn't open, visit:\n{auth_url}\n")
 
     # Start local HTTPS server to catch callback
-    parsed_redirect = urlparse(REDIRECT_URI)
+    parsed_redirect = urlparse(redirect_uri)
     port = parsed_redirect.port or 9432
     use_https = parsed_redirect.scheme == "https"
 
@@ -349,7 +353,7 @@ def authorize(provider_name: str) -> dict:
     token_data = {
         "grant_type": "authorization_code",
         "code": CallbackHandler.auth_code,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "client_id": ACTIVE_CLIENT_ID,
     }
 

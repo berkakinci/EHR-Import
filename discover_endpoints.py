@@ -13,7 +13,10 @@ from config import ENDPOINTS_FILE, PROVIDERS
 
 
 PROVIDER_CONFIGS = {
-    name: {"mychart_base": info["mychart_base"]}
+    name: {
+        "mychart_base": info["mychart_base"],
+        "fhir_base": info.get("fhir_base"),
+    }
     for name, info in PROVIDERS.items()
 }
 
@@ -71,9 +74,22 @@ def main():
     for name, config in PROVIDER_CONFIGS.items():
         print(f"\n--- {name} ---")
         mychart_base = config["mychart_base"]
+        fhir_base_override = config.get("fhir_base")
 
-        # Try SMART configuration first
-        smart_config = discover_smart_config(mychart_base)
+        # If a FHIR base URL is explicitly configured, use it directly
+        if fhir_base_override:
+            print(f"  Using configured fhir_base: {fhir_base_override}")
+            smart_url = f"{fhir_base_override}/.well-known/smart-configuration"
+            try:
+                resp = requests.get(smart_url, timeout=10)
+                resp.raise_for_status()
+                smart_config = resp.json()
+            except requests.RequestException as e:
+                print(f"  Error fetching SMART config from fhir_base: {e}")
+                smart_config = None
+        else:
+            # Try SMART configuration from MyChart base
+            smart_config = discover_smart_config(mychart_base)
 
         if smart_config:
             print(f"  ✓ SMART configuration found")

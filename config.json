@@ -20,7 +20,9 @@
             "mychart_base": "https://mytuftsmed.org/MyChartPRD"
         },
         "BCH Primary Care (CHPPOC)": {
-            "mychart_base": "https://mychart.chppoc.org/MyChart"
+            "mychart_base": "https://mychart.chppoc.org/MyChart",
+            "fhir_base": "https://ppocrp.chppoc.org/fhir-external-prd/api/FHIR/R4",
+            "redirect_uri": "https://lvh.me:9432/callback"
         }
     }
 }
