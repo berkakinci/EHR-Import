@@ -17,10 +17,10 @@ bash setup/setup_env.sh
 python discover_endpoints.py
 
 # 4. Authenticate with a provider (opens browser)
-python auth.py "Boston Children's Hospital"
+python auth.py "Boston Children's"
 
 # 5. Pull your data
-python pull_data.py "Boston Children's Hospital"
+python pull_data.py "Boston Children's"
 ```
 
 ## What Each Script Does

@@ -19,16 +19,16 @@ python setup/verify_setup.py
 python discover_endpoints.py
 
 # 4. Authenticate (opens browser for MyChart login)
-python auth.py "Boston Children's Hospital"
+python auth.py "Boston Children's"
 
 # 5. Pull your records (all authorized patients at this provider)
-python pull_data.py "Boston Children's Hospital"
+python pull_data.py "Boston Children's"
 
 # 6. Pull a specific patient only
-python pull_data.py "Boston Children's Hospital" --patient <patient_id>
+python pull_data.py "Boston Children's" --patient <patient_id>
 
 # 7. Pull only new records since a date
-python pull_data.py "Boston Children's Hospital" --since 2024-06-01
+python pull_data.py "Boston Children's" --since 2024-06-01
 ```
 
 ## Authentication
@@ -58,11 +58,11 @@ access without re-login, see [DEVELOPMENT.md](docs/DEVELOPMENT.md) for confident
 
 Any Epic-based health system with MyChart. Pre-configured:
 
-| Provider | MyChart URL |
-|----------|-------------|
-| Boston Children's Hospital | mychart.childrenshospital.org |
-| Tufts Medicine | mytuftsmed.org |
-| BCH Primary Care (CHPPOC) | mychart.chppoc.org |
+| Config name | Organization | MyChart URL |
+|-------------|--------------|-------------|
+| Boston Children's | Boston Children's Hospital | mychart.childrenshospital.org |
+| Tufts | Tufts Medicine | mytuftsmed.org |
+| Andover Pedi | Pediatric Physicians' Organization at Children's (CHPPOC) | mychart.chppoc.org |
 
 Add your own by editing `config.json`.
 

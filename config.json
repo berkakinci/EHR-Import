@@ -13,13 +13,13 @@
     "redirect_uri": "https://localhost:9432/callback",
     "sandbox_fhir_base_url": "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4/",
     "providers": {
-        "Boston Children's Hospital": {
+        "Boston Children's": {
             "mychart_base": "https://mychart.childrenshospital.org/MyChart"
         },
-        "Tufts Medicine": {
+        "Tufts": {
             "mychart_base": "https://mytuftsmed.org/MyChartPRD"
         },
-        "BCH Primary Care (CHPPOC)": {
+        "Andover Pedi": {
             "mychart_base": "https://mychart.chppoc.org/MyChart",
             "fhir_base": "https://ppocrp.chppoc.org/fhir-external-prd/api/FHIR/R4",
             "redirect_uri": "https://lvh.me:9432/callback"
