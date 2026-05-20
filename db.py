@@ -96,6 +96,117 @@ def init_db():
             error_message TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS conditions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fhir_id TEXT NOT NULL,
+            patient_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            code_display TEXT,
+            clinical_status TEXT,
+            verification_status TEXT,
+            category TEXT,
+            onset_date TEXT,
+            abatement_date TEXT,
+            raw_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(fhir_id, patient_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS vitals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fhir_id TEXT NOT NULL,
+            patient_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            code_display TEXT,
+            value TEXT,
+            unit TEXT,
+            status TEXT,
+            effective_date TEXT,
+            raw_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(fhir_id, patient_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS allergies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fhir_id TEXT NOT NULL,
+            patient_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            code_display TEXT,
+            clinical_status TEXT,
+            verification_status TEXT,
+            type TEXT,
+            category TEXT,
+            criticality TEXT,
+            onset_date TEXT,
+            recorded_date TEXT,
+            reaction_text TEXT,
+            raw_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(fhir_id, patient_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS encounters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fhir_id TEXT NOT NULL,
+            patient_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            encounter_type TEXT,
+            status TEXT,
+            class TEXT,
+            start_date TEXT,
+            end_date TEXT,
+            reason TEXT,
+            participant_name TEXT,
+            raw_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(fhir_id, patient_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS medications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fhir_id TEXT NOT NULL,
+            patient_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            medication_name TEXT,
+            status TEXT,
+            intent TEXT,
+            authored_on TEXT,
+            dosage_text TEXT,
+            requester TEXT,
+            raw_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(fhir_id, patient_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS social_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fhir_id TEXT NOT NULL,
+            patient_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            code_display TEXT,
+            value TEXT,
+            status TEXT,
+            effective_date TEXT,
+            raw_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(fhir_id, patient_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS assessments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fhir_id TEXT NOT NULL,
+            patient_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            code_display TEXT,
+            value TEXT,
+            status TEXT,
+            effective_date TEXT,
+            raw_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(fhir_id, patient_id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_labs_provider ON labs(provider);
         CREATE INDEX IF NOT EXISTS idx_labs_patient ON labs(patient_id);
         CREATE INDEX IF NOT EXISTS idx_labs_date ON labs(effective_date);
@@ -107,6 +218,26 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_diag_provider ON diagnostic_reports(provider);
         CREATE INDEX IF NOT EXISTS idx_diag_patient ON diagnostic_reports(patient_id);
         CREATE INDEX IF NOT EXISTS idx_diag_date ON diagnostic_reports(effective_date);
+        CREATE INDEX IF NOT EXISTS idx_conditions_provider ON conditions(provider);
+        CREATE INDEX IF NOT EXISTS idx_conditions_patient ON conditions(patient_id);
+        CREATE INDEX IF NOT EXISTS idx_conditions_status ON conditions(clinical_status);
+        CREATE INDEX IF NOT EXISTS idx_vitals_provider ON vitals(provider);
+        CREATE INDEX IF NOT EXISTS idx_vitals_patient ON vitals(patient_id);
+        CREATE INDEX IF NOT EXISTS idx_vitals_date ON vitals(effective_date);
+        CREATE INDEX IF NOT EXISTS idx_vitals_code ON vitals(code_display);
+        CREATE INDEX IF NOT EXISTS idx_allergies_provider ON allergies(provider);
+        CREATE INDEX IF NOT EXISTS idx_allergies_patient ON allergies(patient_id);
+        CREATE INDEX IF NOT EXISTS idx_encounters_provider ON encounters(provider);
+        CREATE INDEX IF NOT EXISTS idx_encounters_patient ON encounters(patient_id);
+        CREATE INDEX IF NOT EXISTS idx_encounters_date ON encounters(start_date);
+        CREATE INDEX IF NOT EXISTS idx_medications_provider ON medications(provider);
+        CREATE INDEX IF NOT EXISTS idx_medications_patient ON medications(patient_id);
+        CREATE INDEX IF NOT EXISTS idx_medications_status ON medications(status);
+        CREATE INDEX IF NOT EXISTS idx_social_history_provider ON social_history(provider);
+        CREATE INDEX IF NOT EXISTS idx_social_history_patient ON social_history(patient_id);
+        CREATE INDEX IF NOT EXISTS idx_assessments_provider ON assessments(provider);
+        CREATE INDEX IF NOT EXISTS idx_assessments_patient ON assessments(patient_id);
+        CREATE INDEX IF NOT EXISTS idx_assessments_date ON assessments(effective_date);
     """)
 
     conn.commit()

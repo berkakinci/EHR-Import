@@ -482,6 +482,370 @@ def store_notes(db, notes: list, provider: str, patient_id: str, base_url: str, 
         print()
 
 
+def pull_conditions(base_url: str, patient_id: str, token: str) -> list:
+    """Pull Condition resources (diagnoses, problems)."""
+    params = {
+        "patient": patient_id,
+        "_count": "100",
+    }
+
+    print(f"  Fetching conditions...")
+    conditions = get_all_pages(base_url, "Condition", token, params)
+    print(f"  → {len(conditions)} conditions")
+    return conditions
+
+
+def store_conditions(db, conditions: list, provider: str, patient_id: str):
+    """Store conditions in the database."""
+    cursor = db.cursor()
+    stored = 0
+
+    for cond in conditions:
+        fhir_id = cond.get("id", "")
+        code = cond.get("code", {}).get("text") or _get_coding_display(cond.get("code", {}))
+
+        clinical_status_codings = cond.get("clinicalStatus", {}).get("coding", [])
+        clinical_status = clinical_status_codings[0].get("code") if clinical_status_codings else None
+
+        verification_codings = cond.get("verificationStatus", {}).get("coding", [])
+        verification_status = verification_codings[0].get("code") if verification_codings else None
+
+        category_list = cond.get("category", [])
+        category = _get_coding_display(category_list[0]) if category_list else None
+
+        onset_date = (
+            cond.get("onsetDateTime")
+            or _get_period_start(cond.get("onsetPeriod"))
+        )
+        abatement_date = (
+            cond.get("abatementDateTime")
+            or _get_period_start(cond.get("abatementPeriod"))
+        )
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO conditions
+            (fhir_id, patient_id, provider, code_display, clinical_status, verification_status,
+             category, onset_date, abatement_date, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            fhir_id, patient_id, provider, code, clinical_status, verification_status,
+            category, onset_date, abatement_date, json.dumps(cond),
+        ))
+        stored += 1
+
+    db.commit()
+    print(f"  → Stored {stored} conditions")
+
+
+def pull_vitals(base_url: str, patient_id: str, token: str, since: str = None) -> list:
+    """Pull vital signs Observations."""
+    params = {
+        "patient": patient_id,
+        "category": "vital-signs",
+        "_count": "100",
+    }
+    if since:
+        params["date"] = f"ge{since}"
+
+    print(f"  Fetching vital signs...")
+    vitals = get_all_pages(base_url, "Observation", token, params)
+    print(f"  → {len(vitals)} vital signs")
+    return vitals
+
+
+def store_vitals(db, vitals: list, provider: str, patient_id: str):
+    """Store vital sign observations in the database."""
+    cursor = db.cursor()
+    stored = 0
+
+    for obs in vitals:
+        fhir_id = obs.get("id", "")
+        code = obs.get("code", {}).get("text") or _get_coding_display(obs.get("code", {}))
+        value = _extract_value(obs)
+        unit = _extract_unit(obs)
+        status = obs.get("status", "")
+        effective_date = obs.get("effectiveDateTime") or _get_period_start(obs.get("effectivePeriod"))
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO vitals
+            (fhir_id, patient_id, provider, code_display, value, unit, status, effective_date, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            fhir_id, patient_id, provider, code, value, unit, status,
+            effective_date, json.dumps(obs),
+        ))
+        stored += 1
+
+    db.commit()
+    print(f"  → Stored {stored} vital signs")
+
+
+def pull_allergies(base_url: str, patient_id: str, token: str) -> list:
+    """Pull AllergyIntolerance resources."""
+    params = {
+        "patient": patient_id,
+        "_count": "100",
+    }
+
+    print(f"  Fetching allergies...")
+    allergies = get_all_pages(base_url, "AllergyIntolerance", token, params)
+    print(f"  → {len(allergies)} allergies")
+    return allergies
+
+
+def store_allergies(db, allergies: list, provider: str, patient_id: str):
+    """Store allergy/intolerance records in the database."""
+    cursor = db.cursor()
+    stored = 0
+
+    for allergy in allergies:
+        fhir_id = allergy.get("id", "")
+        code = allergy.get("code", {}).get("text") or _get_coding_display(allergy.get("code", {}))
+
+        clinical_status_codings = allergy.get("clinicalStatus", {}).get("coding", [])
+        clinical_status = clinical_status_codings[0].get("code") if clinical_status_codings else None
+
+        verification_codings = allergy.get("verificationStatus", {}).get("coding", [])
+        verification_status = verification_codings[0].get("code") if verification_codings else None
+
+        allergy_type = allergy.get("type")
+        category_list = allergy.get("category", [])
+        category = ", ".join(category_list) if category_list else None
+
+        criticality = allergy.get("criticality")
+        onset_date = allergy.get("onsetDateTime") or _get_period_start(allergy.get("onsetPeriod"))
+        recorded_date = allergy.get("recordedDate")
+
+        # Extract reactions summary
+        reactions = allergy.get("reaction", [])
+        reaction_text = None
+        if reactions:
+            parts = []
+            for r in reactions:
+                manifestations = [
+                    m.get("text") or _get_coding_display(m)
+                    for m in r.get("manifestation", [])
+                ]
+                if manifestations:
+                    parts.extend(manifestations)
+            reaction_text = "; ".join(parts) if parts else None
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO allergies
+            (fhir_id, patient_id, provider, code_display, clinical_status, verification_status,
+             type, category, criticality, onset_date, recorded_date, reaction_text, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            fhir_id, patient_id, provider, code, clinical_status, verification_status,
+            allergy_type, category, criticality, onset_date, recorded_date,
+            reaction_text, json.dumps(allergy),
+        ))
+        stored += 1
+
+    db.commit()
+    print(f"  → Stored {stored} allergies")
+
+
+def pull_encounters(base_url: str, patient_id: str, token: str, since: str = None) -> list:
+    """Pull Encounter resources."""
+    params = {
+        "patient": patient_id,
+        "_count": "100",
+    }
+    if since:
+        params["date"] = f"ge{since}"
+
+    print(f"  Fetching encounters...")
+    encounters = get_all_pages(base_url, "Encounter", token, params)
+    print(f"  → {len(encounters)} encounters")
+    return encounters
+
+
+def store_encounters(db, encounters: list, provider: str, patient_id: str):
+    """Store encounter records in the database."""
+    cursor = db.cursor()
+    stored = 0
+
+    for enc in encounters:
+        fhir_id = enc.get("id", "")
+
+        type_list = enc.get("type", [])
+        encounter_type = _get_coding_display(type_list[0]) if type_list else None
+
+        status = enc.get("status", "")
+        enc_class = enc.get("class", {}).get("display") or enc.get("class", {}).get("code")
+
+        period = enc.get("period", {})
+        start_date = period.get("start")
+        end_date = period.get("end")
+
+        reason_list = enc.get("reasonCode", [])
+        reason = _get_coding_display(reason_list[0]) if reason_list else None
+
+        # Extract primary participant/provider
+        participants = enc.get("participant", [])
+        participant_name = None
+        for p in participants:
+            individual = p.get("individual", {})
+            if individual.get("display"):
+                participant_name = individual["display"]
+                break
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO encounters
+            (fhir_id, patient_id, provider, encounter_type, status, class, start_date, end_date,
+             reason, participant_name, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            fhir_id, patient_id, provider, encounter_type, status, enc_class,
+            start_date, end_date, reason, participant_name, json.dumps(enc),
+        ))
+        stored += 1
+
+    db.commit()
+    print(f"  → Stored {stored} encounters")
+
+
+def pull_medications(base_url: str, patient_id: str, token: str, since: str = None) -> list:
+    """Pull MedicationRequest resources."""
+    params = {
+        "patient": patient_id,
+        "_count": "100",
+    }
+    if since:
+        params["date"] = f"ge{since}"
+
+    print(f"  Fetching medication requests...")
+    meds = get_all_pages(base_url, "MedicationRequest", token, params)
+    print(f"  → {len(meds)} medication requests")
+    return meds
+
+
+def store_medications(db, medications: list, provider: str, patient_id: str):
+    """Store medication request records in the database."""
+    cursor = db.cursor()
+    stored = 0
+
+    for med in medications:
+        fhir_id = med.get("id", "")
+
+        # Medication name from medicationCodeableConcept or medicationReference
+        med_concept = med.get("medicationCodeableConcept", {})
+        medication_name = med_concept.get("text") or _get_coding_display(med_concept)
+        if medication_name == "Unknown" and med.get("medicationReference"):
+            medication_name = med["medicationReference"].get("display", "Unknown")
+
+        status = med.get("status", "")
+        intent = med.get("intent", "")
+        authored_on = med.get("authoredOn")
+
+        # Dosage instructions
+        dosage_list = med.get("dosageInstruction", [])
+        dosage_text = None
+        if dosage_list:
+            texts = [d.get("text", "") for d in dosage_list if d.get("text")]
+            dosage_text = "; ".join(texts) if texts else None
+
+        # Requester (prescriber)
+        requester = med.get("requester", {}).get("display")
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO medications
+            (fhir_id, patient_id, provider, medication_name, status, intent, authored_on,
+             dosage_text, requester, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            fhir_id, patient_id, provider, medication_name, status, intent,
+            authored_on, dosage_text, requester, json.dumps(med),
+        ))
+        stored += 1
+
+    db.commit()
+    print(f"  → Stored {stored} medication requests")
+
+
+def pull_social_history(base_url: str, patient_id: str, token: str) -> list:
+    """Pull social history Observations."""
+    params = {
+        "patient": patient_id,
+        "category": "social-history",
+        "_count": "100",
+    }
+
+    print(f"  Fetching social history...")
+    obs = get_all_pages(base_url, "Observation", token, params)
+    print(f"  → {len(obs)} social history observations")
+    return obs
+
+
+def store_social_history(db, observations: list, provider: str, patient_id: str):
+    """Store social history observations in the database."""
+    cursor = db.cursor()
+    stored = 0
+
+    for obs in observations:
+        fhir_id = obs.get("id", "")
+        code = obs.get("code", {}).get("text") or _get_coding_display(obs.get("code", {}))
+        value = _extract_value(obs)
+        status = obs.get("status", "")
+        effective_date = obs.get("effectiveDateTime") or _get_period_start(obs.get("effectivePeriod"))
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO social_history
+            (fhir_id, patient_id, provider, code_display, value, status, effective_date, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            fhir_id, patient_id, provider, code, value, status,
+            effective_date, json.dumps(obs),
+        ))
+        stored += 1
+
+    db.commit()
+    print(f"  → Stored {stored} social history observations")
+
+
+def pull_assessments(base_url: str, patient_id: str, token: str, since: str = None) -> list:
+    """Pull assessment/survey Observations."""
+    params = {
+        "patient": patient_id,
+        "category": "survey",
+        "_count": "100",
+    }
+    if since:
+        params["date"] = f"ge{since}"
+
+    print(f"  Fetching assessments...")
+    obs = get_all_pages(base_url, "Observation", token, params)
+    print(f"  → {len(obs)} assessments")
+    return obs
+
+
+def store_assessments(db, observations: list, provider: str, patient_id: str):
+    """Store assessment/survey observations in the database."""
+    cursor = db.cursor()
+    stored = 0
+
+    for obs in observations:
+        fhir_id = obs.get("id", "")
+        code = obs.get("code", {}).get("text") or _get_coding_display(obs.get("code", {}))
+        value = _extract_value(obs)
+        status = obs.get("status", "")
+        effective_date = obs.get("effectiveDateTime") or _get_period_start(obs.get("effectivePeriod"))
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO assessments
+            (fhir_id, patient_id, provider, code_display, value, status, effective_date, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            fhir_id, patient_id, provider, code, value, status,
+            effective_date, json.dumps(obs),
+        ))
+        stored += 1
+
+    db.commit()
+    print(f"  → Stored {stored} assessments")
+
+
 # --- Helper functions ---
 
 def _get_coding_display(codeable_concept: dict) -> str:
@@ -592,6 +956,34 @@ def pull_for_patient(provider_name: str, tokens: dict, since: str = None):
         notes = pull_notes(base_url, patient_id, access_token, since)
         store_notes(db, notes, provider_name, patient_id, base_url, access_token)
 
+        # Pull conditions
+        conditions = pull_conditions(base_url, patient_id, access_token)
+        store_conditions(db, conditions, provider_name, patient_id)
+
+        # Pull vitals
+        vitals = pull_vitals(base_url, patient_id, access_token, since)
+        store_vitals(db, vitals, provider_name, patient_id)
+
+        # Pull allergies
+        allergies = pull_allergies(base_url, patient_id, access_token)
+        store_allergies(db, allergies, provider_name, patient_id)
+
+        # Pull encounters
+        encounters = pull_encounters(base_url, patient_id, access_token, since)
+        store_encounters(db, encounters, provider_name, patient_id)
+
+        # Pull medications
+        medications = pull_medications(base_url, patient_id, access_token, since)
+        store_medications(db, medications, provider_name, patient_id)
+
+        # Pull social history
+        social_history = pull_social_history(base_url, patient_id, access_token)
+        store_social_history(db, social_history, provider_name, patient_id)
+
+        # Pull assessments
+        assessments = pull_assessments(base_url, patient_id, access_token, since)
+        store_assessments(db, assessments, provider_name, patient_id)
+
         # Save raw data
         RAW_PULLS_DIR.mkdir(exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -600,6 +992,13 @@ def pull_for_patient(provider_name: str, tokens: dict, since: str = None):
                 "labs": labs,
                 "notes": notes,
                 "reports": reports,
+                "conditions": conditions,
+                "vitals": vitals,
+                "allergies": allergies,
+                "encounters": encounters,
+                "medications": medications,
+                "social_history": social_history,
+                "assessments": assessments,
             }, f, indent=2)
 
         print(f"\n✓ Done. Raw data saved to {RAW_PULLS_DIR}/")

@@ -159,9 +159,17 @@ After marking an app "Ready for Production" on open.epic.com:
 ## Database Schema
 
 See `db.py` for full schema. Tables:
+- `patients` — demographics (name, DOB, provider)
 - `labs` — structured lab results (patient_id, code, value, unit, reference range, date)
 - `notes` — clinical notes (patient_id, type, author, date, full text content, fetch status/URL)
 - `diagnostic_reports` — imaging/pathology/lab panels (patient_id, code, date, presentedForm content, result observation refs, fetch status/URL)
+- `conditions` — diagnoses and problems (patient_id, code, clinical/verification status, category, onset/abatement dates)
+- `vitals` — vital sign observations (patient_id, code, value, unit, date)
+- `allergies` — allergy/intolerance records (patient_id, code, status, criticality, reactions)
+- `encounters` — visits and appointments (patient_id, type, class, dates, reason, participant)
+- `medications` — medication requests/orders (patient_id, medication name, status, dosage, requester)
+- `social_history` — social history observations (patient_id, code, value)
+- `assessments` — survey/questionnaire observations (patient_id, code, value, date)
 - `sync_log` — tracks pull history per provider
 
 All data tables include `patient_id` (FHIR patient ID from the token response) to support multiple family members from the same provider. Unique constraint is `(fhir_id, patient_id)`.
