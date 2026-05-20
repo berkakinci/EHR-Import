@@ -1,10 +1,12 @@
 """
 SMART on FHIR standalone patient launch — OAuth2 authorization code flow.
 
-Supports two client types:
+Supports multiple authentication methods (configured per-app in config.json):
   - "public": PKCE (S256), no client secret, no refresh tokens
-  - "confidential": JWT assertion (private_key_jwt), enables refresh tokens
+  - "secret": client secret authentication
+  - "jwt": JWT assertion (private_key_jwt), enables refresh tokens
 
+During token exchange, tries each configured method in order until one succeeds.
 Opens a browser for MyChart login, runs a local HTTPS server to catch the callback,
 exchanges the auth code for access + refresh tokens, and saves them locally.
 """
@@ -25,7 +27,7 @@ import requests
 
 from config import (
     TOKEN_STORE, ENDPOINTS_FILE, ACTIVE_CLIENT_ID, REDIRECT_URI, DATA_DIR,
-    JWK_PRIVATE_KEY_PATH, PROVIDERS,
+    JWK_PRIVATE_KEY_PATH, PROVIDERS, AUTH_METHODS,
 )
 
 # Scopes we need for labs + notes
@@ -47,21 +49,29 @@ CERT_FILE = CERT_DIR / "localhost.pem"
 KEY_FILE = CERT_DIR / "localhost-key.pem"
 
 
-# --- PKCE helpers (public client) ---
+# --- Auth method helpers ---
 
-def _detect_auth_method() -> str:
-    """
-    Detect which authentication method to use based on available credential files.
+def _can_use_method(method: str) -> bool:
+    """Check whether the credentials needed for a given auth method are available."""
+    if method == "jwt":
+        return JWK_PRIVATE_KEY_PATH.exists()
+    elif method == "secret":
+        secret_file = DATA_DIR / "client_secret.txt"
+        return secret_file.exists() and bool(secret_file.read_text().strip())
+    elif method == "public":
+        return True  # PKCE needs no credentials
+    return False
 
-    Returns: "jwt", "secret", or "public"
-    Priority: JWT > client secret > public (PKCE only)
+
+def _get_usable_auth_methods() -> list[str]:
     """
-    if JWK_PRIVATE_KEY_PATH.exists():
-        return "jwt"
-    secret_file = DATA_DIR / "client_secret.txt"
-    if secret_file.exists() and secret_file.read_text().strip():
-        return "secret"
-    return "public"
+    Return the ordered list of auth methods that are both configured and have
+    the required credentials available.
+    """
+    return [m for m in AUTH_METHODS if _can_use_method(m)]
+
+
+# --- PKCE helpers ---
 
 
 def generate_pkce_pair() -> tuple[str, str]:
@@ -263,10 +273,8 @@ def authorize(provider_name: str) -> dict:
     """
     Run the full OAuth2 authorization code flow.
 
-    Auth method is auto-detected from available credential files:
-      - jwk_private.pem exists → JWT assertion (private_key_jwt)
-      - client_secret.txt exists → client secret
-      - neither → public client with PKCE
+    Tries each configured auth method (from config.json auth_methods array) in order
+    during the token exchange. The first method that succeeds wins.
     """
     if not ACTIVE_CLIENT_ID:
         raise ValueError("No client ID configured")
@@ -275,7 +283,15 @@ def authorize(provider_name: str) -> dict:
     CallbackHandler.auth_code = None
     CallbackHandler.state = None
 
-    auth_method = _detect_auth_method()
+    usable_methods = _get_usable_auth_methods()
+    if not usable_methods:
+        raise ValueError(
+            f"No usable auth methods. Configured: {AUTH_METHODS}. "
+            "Check that required credential files exist."
+        )
+
+    # Determine if any method needs PKCE (include it if "public" is in the list)
+    use_pkce = "public" in usable_methods
 
     config = load_endpoint_config(provider_name)
 
@@ -299,9 +315,9 @@ def authorize(provider_name: str) -> dict:
         "aud": config.get("fhir_base_url", ""),
     }
 
-    # PKCE for public clients (also fine to include for confidential — adds security)
+    # PKCE — include if any usable method is "public" (harmless for confidential too)
     code_verifier = None
-    if auth_method == "public":
+    if use_pkce:
         code_verifier, code_challenge = generate_pkce_pair()
         auth_params["code_challenge"] = code_challenge
         auth_params["code_challenge_method"] = "S256"
@@ -310,7 +326,7 @@ def authorize(provider_name: str) -> dict:
 
     print(f"\nOpening browser for MyChart login...")
     print(f"Provider: {provider_name}")
-    print(f"Auth method: {auth_method}")
+    print(f"Auth methods to try: {usable_methods}")
     print(f"If the browser doesn't open, visit:\n{auth_url}\n")
 
     # Start local HTTPS server to catch callback
@@ -349,37 +365,57 @@ def authorize(provider_name: str) -> dict:
 
     print("✓ Authorization code received. Exchanging for tokens...")
 
-    # --- Token exchange (branched by auth method) ---
-    token_data = {
-        "grant_type": "authorization_code",
-        "code": CallbackHandler.auth_code,
-        "redirect_uri": redirect_uri,
-        "client_id": ACTIVE_CLIENT_ID,
-    }
+    # --- Token exchange: try each method in order ---
+    tokens = None
+    successful_method = None
 
-    if auth_method == "public":
-        # Public client: send PKCE code_verifier, no credentials
-        token_data["code_verifier"] = code_verifier
+    for method in usable_methods:
+        token_data = {
+            "grant_type": "authorization_code",
+            "code": CallbackHandler.auth_code,
+            "redirect_uri": redirect_uri,
+            "client_id": ACTIVE_CLIENT_ID,
+        }
 
-    elif auth_method == "jwt":
-        # Confidential client: JWT assertion
-        assertion = build_client_assertion(token_endpoint)
-        token_data["client_assertion_type"] = (
-            "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+        if method == "public":
+            token_data["code_verifier"] = code_verifier
+        elif method == "jwt":
+            assertion = build_client_assertion(token_endpoint)
+            token_data["client_assertion_type"] = (
+                "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+            )
+            token_data["client_assertion"] = assertion
+        elif method == "secret":
+            token_data["client_secret"] = _load_client_secret()
+
+        resp = requests.post(token_endpoint, data=token_data)
+
+        if resp.ok:
+            tokens = resp.json()
+            successful_method = method
+            break
+        else:
+            # Log failure and try next method
+            detail = ""
+            try:
+                err_body = resp.json()
+                detail = err_body.get("error_description") or err_body.get("error", "")
+            except (ValueError, AttributeError):
+                detail = resp.text[:200] if resp.text else ""
+            print(f"  ✗ {method}: HTTP {resp.status_code} — {detail}")
+
+    if tokens is None:
+        raise RuntimeError(
+            f"Token exchange failed with all methods: {usable_methods}. "
+            "Check app registration and credential files."
         )
-        token_data["client_assertion"] = assertion
 
-    elif auth_method == "secret":
-        # Confidential client: client secret
-        token_data["client_secret"] = _load_client_secret()
+    print(f"  ✓ Token exchange succeeded with: {successful_method}")
 
-    resp = requests.post(token_endpoint, data=token_data)
-    resp.raise_for_status()
-    tokens = resp.json()
-
-    # Save tokens
+    # Save tokens (include auth_method so refresh knows what to use)
     token_record = {
         "provider": provider_name,
+        "auth_method": successful_method,
         "access_token": tokens["access_token"],
         "refresh_token": tokens.get("refresh_token"),
         "token_type": tokens.get("token_type", "Bearer"),
@@ -392,7 +428,7 @@ def authorize(provider_name: str) -> dict:
 
     save_tokens(provider_name, token_record)
 
-    has_refresh = "✓" if tokens.get("refresh_token") else "✗ (public client — re-run auth when token expires)"
+    has_refresh = "✓" if tokens.get("refresh_token") else "✗ (no refresh token — re-run auth when token expires)"
     print(f"✓ Tokens saved. Patient ID: {tokens.get('patient')}")
     print(f"  Refresh token: {has_refresh}")
     return token_record
@@ -485,21 +521,29 @@ def refresh_access_token(provider_name: str, patient_id: str | None = None) -> d
     """
     Use refresh token to get a new access token.
 
-    Only available for confidential clients (jwt or secret).
-    Public clients must re-authorize.
+    Uses the auth_method stored in the token record (from the original authorize flow).
+    Falls back to trying configured methods if not stored.
     """
     tokens = load_tokens(provider_name, patient_id)
-    auth_method = _detect_auth_method()
 
     if not tokens or not tokens.get("refresh_token"):
-        if auth_method == "public":
-            raise ValueError(
-                f"No refresh token for '{provider_name}' (public client). "
-                f"Run: python auth.py \"{provider_name}\" to re-authorize."
-            )
-        raise ValueError(f"No refresh token for '{provider_name}'. Run authorize() again.")
+        raise ValueError(
+            f"No refresh token for '{provider_name}'. "
+            f"Run: python auth.py \"{provider_name}\" to re-authorize."
+        )
 
     token_endpoint = tokens["token_endpoint"]
+    auth_method = tokens.get("auth_method")
+
+    # Fallback: if no auth_method stored (old token), try first usable non-public method
+    if not auth_method:
+        usable = _get_usable_auth_methods()
+        auth_method = next((m for m in usable if m != "public"), None)
+        if not auth_method:
+            raise ValueError(
+                f"No auth method for refresh (public clients don't get refresh tokens). "
+                f"Run: python auth.py \"{provider_name}\" to re-authorize."
+            )
 
     token_data = {
         "grant_type": "refresh_token",
@@ -507,7 +551,7 @@ def refresh_access_token(provider_name: str, patient_id: str | None = None) -> d
         "client_id": ACTIVE_CLIENT_ID,
     }
 
-    # Authenticate the refresh request (same method as token exchange)
+    # Authenticate the refresh request
     if auth_method == "jwt":
         assertion = build_client_assertion(token_endpoint)
         token_data["client_assertion_type"] = (
@@ -530,7 +574,7 @@ def refresh_access_token(provider_name: str, patient_id: str | None = None) -> d
     tokens["expires_in"] = new_tokens.get("expires_in")
 
     save_tokens(provider_name, tokens)
-    print(f"✓ Token refreshed for {provider_name}")
+    print(f"✓ Token refreshed for {provider_name} (method: {auth_method})")
     return tokens
 
 
@@ -541,7 +585,9 @@ if __name__ == "__main__":
 
     if len(sys.argv) < 2:
         print("Usage: python auth.py <provider_name>")
-        print(f"\n  Auth method (detected): {_detect_auth_method()}")
+        usable = _get_usable_auth_methods()
+        print(f"\n  Configured auth methods: {AUTH_METHODS}")
+        print(f"  Usable (credentials available): {usable}")
         print("\nAvailable providers (from discovered_endpoints.json):")
         if ENDPOINTS_FILE.exists():
             with open(ENDPOINTS_FILE) as f:

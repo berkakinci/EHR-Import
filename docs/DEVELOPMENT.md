@@ -59,8 +59,35 @@ flowchart TD
 
 ## Authentication Methods
 
-The app supports two OAuth2 client types. Which one is active is determined by `client_type`
-in `config.json` (`"public"` or `"confidential"`).
+The app supports three OAuth2 authentication methods. Which methods are available is
+determined by the `auth_methods` array in each app's config within `config.json`.
+
+During token exchange, the app tries each configured method in order until one succeeds.
+
+### Configuration
+
+```json
+{
+    "active_app": "public",
+    "apps": {
+        "public": {
+            "client_id": "...",
+            "auth_methods": ["public"]
+        },
+        "confidential": {
+            "client_id": "...",
+            "auth_methods": ["jwt", "secret"]
+        }
+    }
+}
+```
+
+Each method is only attempted if the required credentials are present:
+- `"public"` — always available (PKCE needs no credentials)
+- `"secret"` — requires `DATA_DIR/client_secret.txt`
+- `"jwt"` — requires `DATA_DIR/jwk_private.pem`
+
+The successful method is stored in `tokens.json` so that token refresh uses the same method.
 
 ### Public Client (default for open-source use)
 

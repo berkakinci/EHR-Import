@@ -3,11 +3,13 @@
     "apps": {
         "public": {
             "client_id": "68d83ddb-87a8-411d-9876-e3fc38dff9ed",
-            "non_production_client_id": "fffb2dd4-82eb-4228-99bf-1a2c907c482a"
+            "non_production_client_id": "fffb2dd4-82eb-4228-99bf-1a2c907c482a",
+            "auth_methods": ["public"]
         },
         "confidential": {
             "client_id": "a02d2ae3-2595-49b1-bbde-0f81a40eed5b",
-            "non_production_client_id": "a1dc9efc-6058-4bea-9ba2-dea66ef1e7df"
+            "non_production_client_id": "a1dc9efc-6058-4bea-9ba2-dea66ef1e7df",
+            "auth_methods": ["jwt", "secret"]
         }
     },
     "redirect_uri": "https://localhost:9432/callback",

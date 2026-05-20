@@ -45,6 +45,7 @@ _active_app_config = _apps.get(_active_app, {})
 
 CLIENT_ID = _active_app_config.get("client_id", _config.get("client_id", ""))
 NON_PRODUCTION_CLIENT_ID = _active_app_config.get("non_production_client_id", _config.get("non_production_client_id", ""))
+AUTH_METHODS = _active_app_config["auth_methods"]
 REDIRECT_URI = _config["redirect_uri"]
 SANDBOX_FHIR_BASE_URL = _config.get("sandbox_fhir_base_url", "")
 PROVIDERS = _config.get("providers", {})
