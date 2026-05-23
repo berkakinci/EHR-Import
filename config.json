@@ -10,21 +10,28 @@
             "client_id": "a02d2ae3-2595-49b1-bbde-0f81a40eed5b",
             "non_production_client_id": "a1dc9efc-6058-4bea-9ba2-dea66ef1e7df",
             "auth_methods": ["jwt", "secret"]
+        },
+        "confidential_v2": {
+            "client_id": "f2a91bd8-0d59-4563-aa4a-7c1f2e97cc5f",
+            "non_production_client_id": "8ef312df-59d2-4146-adcb-10ff3f643f62",
+            "auth_methods": ["jwt", "secret"]
         }
     },
     "redirect_uri": "https://localhost:9432/callback",
-    "sandbox_fhir_base_url": "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4/",
     "providers": {
         "Boston Children's": {
-            "mychart_base": "https://mychart.childrenshospital.org/MyChart"
+            "portal_url": "https://mychart.childrenshospital.org/MyChart"
         },
         "Tufts": {
-            "mychart_base": "https://mytuftsmed.org/MyChartPRD"
+            "portal_url": "https://mytuftsmed.org/MyChartPRD"
         },
         "Andover Pedi": {
-            "mychart_base": "https://mychart.chppoc.org/MyChart",
-            "fhir_base": "https://ppocrp.chppoc.org/fhir-external-prd/api/FHIR/R4",
+            "hint": "Pediatric Physicians",
             "redirect_uri": "https://lvh.me:9432/callback"
+        },
+        "Epic Sandbox": {
+            "fhir_base": "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4",
+            "non_production": true
         }
     }
 }

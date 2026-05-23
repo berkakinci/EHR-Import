@@ -1,67 +1,182 @@
 """
-Discover FHIR endpoints from MyChart URLs.
+Discover FHIR endpoints for configured providers.
 
-Each Epic MyChart instance publishes a SMART configuration at a well-known URL.
-This script fetches those configurations to find the FHIR base URL,
-authorization endpoint, and token endpoint for each provider.
+Resolution order for each provider:
+1. If fhir_base is configured, probe its .well-known/smart-configuration directly.
+2. Otherwise, search the Epic Brands Bundle by provider name/hint/portal-derived org name.
+
+The Brands Bundle (open.epic.com/Endpoints/Brands) is cached locally and refreshed
+every 3 days. It contains ~800 FHIR endpoints searchable by organization name.
 """
 
 import json
+import os
+import time
+
 import requests
 
-from config import ENDPOINTS_FILE, PROVIDERS
+from config import DATA_DIR, ENDPOINTS_FILE, PROVIDERS
 
 
-PROVIDER_CONFIGS = {
-    name: {
-        "mychart_base": info["mychart_base"],
-        "fhir_base": info.get("fhir_base"),
-    }
-    for name, info in PROVIDERS.items()
-}
+BRANDS_FILE = DATA_DIR / "epic_brands_bundle.json"
+BRANDS_URL = "https://open.epic.com/Endpoints/Brands"
+BRANDS_MAX_AGE = 3 * 86400  # 3 days
 
 
-def discover_smart_config(mychart_base: str) -> dict | None:
-    """Fetch the SMART configuration from a MyChart instance."""
-    url = f"{mychart_base}/.well-known/smart-configuration"
+def load_brands_bundle() -> dict:
+    """Load the Brands Bundle, downloading if missing or stale."""
+    if BRANDS_FILE.exists() and (time.time() - os.path.getmtime(BRANDS_FILE)) < BRANDS_MAX_AGE:
+        with open(BRANDS_FILE) as f:
+            return json.load(f)
+    print("  Downloading Epic Brands Bundle (~85MB, cached for 3 days)...")
+    resp = requests.get(BRANDS_URL, timeout=120)
+    resp.raise_for_status()
+    BRANDS_FILE.write_text(resp.text)
+    return resp.json()
+
+
+def search_brands(bundle: dict, query: str) -> list[dict]:
+    """Search the Brands Bundle for endpoints matching a query string.
+
+    Searches brand-level Organizations (those with endpoint references) and their
+    child Organizations (clinics/practices that partOf a brand). Returns matches
+    with the resolved FHIR base URL.
+    """
+    entries = bundle.get("entry", [])
+    by_url = {e.get("fullUrl"): e["resource"] for e in entries if "resource" in e}
+
+    # Index: brand orgs (have endpoint refs) and their endpoints
+    brands = []  # (org_name, fhir_base, org_resource)
+    for e in entries:
+        r = e.get("resource", {})
+        if r.get("resourceType") == "Organization" and r.get("endpoint"):
+            for ep_ref in r["endpoint"]:
+                ep = by_url.get(ep_ref.get("reference"))
+                if ep and ep.get("address"):
+                    brands.append((r.get("name", ""), ep["address"], e.get("fullUrl")))
+
+    # Index: child orgs → parent brand URL
+    child_to_brand = {}
+    for e in entries:
+        r = e.get("resource", {})
+        if r.get("resourceType") == "Organization" and r.get("partOf"):
+            parent_ref = r["partOf"].get("reference", "")
+            child_to_brand[r.get("name", "")] = parent_ref
+
+    query_lower = query.lower()
+    results = []
+    seen_addresses = set()
+
+    # Search brand names directly
+    for name, address, brand_url in brands:
+        if query_lower in name.lower():
+            if address not in seen_addresses:
+                results.append({"name": name, "fhir_base": address, "match": "brand"})
+                seen_addresses.add(address)
+
+    # Search child org names, resolve to parent brand
+    if not results:
+        brand_url_to_endpoint = {url: (name, addr) for name, addr, url in brands}
+        for child_name, parent_ref in child_to_brand.items():
+            if query_lower in child_name.lower():
+                if parent_ref in brand_url_to_endpoint:
+                    brand_name, address = brand_url_to_endpoint[parent_ref]
+                    if address not in seen_addresses:
+                        results.append({
+                            "name": brand_name,
+                            "fhir_base": address,
+                            "match": f"child org: {child_name}",
+                        })
+                        seen_addresses.add(address)
+
+    return results
+
+
+def fetch_smart_config(fhir_base: str) -> dict | None:
+    """Fetch .well-known/smart-configuration from a FHIR base URL."""
+    url = f"{fhir_base}/.well-known/smart-configuration"
     try:
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         return resp.json()
-    except requests.RequestException as e:
-        print(f"  Error fetching {url}: {e}")
+    except (requests.RequestException, ValueError):
         return None
 
 
-def discover_fhir_metadata(mychart_base: str) -> dict | None:
-    """
-    Fallback: try the FHIR metadata endpoint.
-    Epic often exposes FHIR at a sibling path to MyChart.
-    Common patterns:
-      /MyChart -> /FHIR/api/FHIR/R4/
-      /MyChart -> /FHIRProxy/api/FHIR/R4/
-    """
-    # Try common FHIR base URL patterns relative to the MyChart host
-    from urllib.parse import urlparse
-
-    parsed = urlparse(mychart_base)
-    base_host = f"{parsed.scheme}://{parsed.netloc}"
-
-    candidates = [
-        f"{base_host}/FHIR/api/FHIR/R4",
-        f"{base_host}/FHIRProxy/api/FHIR/R4",
-        f"{base_host}/fhir/api/FHIR/R4",
-    ]
-
-    for candidate in candidates:
-        try:
-            resp = requests.get(f"{candidate}/metadata", timeout=10)
-            if resp.status_code == 200:
-                return {"fhir_base_url": candidate, "source": "metadata probe"}
-        except requests.RequestException:
-            continue
-
+def derive_hint_from_portal(portal_url: str) -> str | None:
+    """Fetch a portal page and extract og:site_name as a search hint."""
+    try:
+        resp = requests.get(portal_url, timeout=10, allow_redirects=True)
+        if resp.status_code != 200:
+            return None
+        import re
+        match = re.search(r'og:site_name[^>]*content="([^"]+)"', resp.text, re.IGNORECASE)
+        if match:
+            import html
+            return html.unescape(match.group(1))
+    except requests.RequestException:
+        pass
     return None
+
+
+def discover_provider(name: str, config: dict, brands: dict | None) -> dict | None:
+    """Discover FHIR endpoints for a single provider. Returns endpoint dict or None."""
+    fhir_base = config.get("fhir_base")
+
+    # 1. If fhir_base is configured, use it directly
+    if fhir_base:
+        print(f"  Using configured fhir_base: {fhir_base}")
+        smart = fetch_smart_config(fhir_base)
+        if smart:
+            return _build_result(fhir_base, smart)
+        print(f"  ⚠ No SMART config at configured fhir_base")
+
+    # 2. Gather search hints from all available sources
+    hints = set()
+    hints.add(name)  # Always try the provider key itself
+
+    if config.get("hint"):
+        hints.add(config["hint"])
+
+    portal_url = config.get("portal_url")
+    if portal_url:
+        derived = derive_hint_from_portal(portal_url)
+        if derived:
+            print(f"  Derived hint from portal: \"{derived}\"")
+            hints.add(derived)
+
+    # 3. Search Brands Bundle with all hints, combine results
+    if brands:
+        all_matches = {}  # fhir_base → match info (dedup by endpoint)
+        for hint in hints:
+            for match in search_brands(brands, hint):
+                all_matches[match["fhir_base"]] = match
+
+        if len(all_matches) == 1:
+            match = list(all_matches.values())[0]
+            fhir_base = match["fhir_base"]
+            print(f"  Found: {match['name']} ({match['match']})")
+            smart = fetch_smart_config(fhir_base)
+            if smart:
+                return _build_result(fhir_base, smart)
+        elif len(all_matches) > 1:
+            print(f"  Multiple endpoints found (searched: {hints}):")
+            for i, match in enumerate(all_matches.values(), 1):
+                print(f"    {i}. {match['name']} → {match['fhir_base']}")
+            print(f"  → Add 'hint' or 'fhir_base' to config.json to disambiguate")
+        else:
+            print(f"  No match in Brands Bundle (searched: {hints})")
+
+    # 3. Fallback: nothing worked
+    return None
+
+
+def _build_result(fhir_base: str, smart_config: dict) -> dict:
+    return {
+        "fhir_base_url": fhir_base,
+        "authorization_endpoint": smart_config.get("authorization_endpoint"),
+        "token_endpoint": smart_config.get("token_endpoint"),
+    }
 
 
 def main():
@@ -69,62 +184,33 @@ def main():
     print("FHIR Endpoint Discovery")
     print("=" * 60)
 
+    # Load Brands Bundle (cached)
+    brands = None
+    try:
+        brands = load_brands_bundle()
+        entries = brands.get("entry", [])
+        n_endpoints = sum(1 for e in entries if e.get("resource", {}).get("resourceType") == "Endpoint")
+        print(f"  Brands Bundle: {n_endpoints} endpoints indexed")
+    except Exception as e:
+        print(f"  ⚠ Could not load Brands Bundle: {e}")
+        print(f"  Continuing with configured fhir_base only")
+
     results = {}
 
-    for name, config in PROVIDER_CONFIGS.items():
+    for name, config in PROVIDERS.items():
         print(f"\n--- {name} ---")
-        mychart_base = config["mychart_base"]
-        fhir_base_override = config.get("fhir_base")
-
-        # If a FHIR base URL is explicitly configured, use it directly
-        if fhir_base_override:
-            print(f"  Using configured fhir_base: {fhir_base_override}")
-            smart_url = f"{fhir_base_override}/.well-known/smart-configuration"
-            try:
-                resp = requests.get(smart_url, timeout=10)
-                resp.raise_for_status()
-                smart_config = resp.json()
-            except requests.RequestException as e:
-                print(f"  Error fetching SMART config from fhir_base: {e}")
-                smart_config = None
+        result = discover_provider(name, config, brands)
+        if result:
+            print(f"  ✓ {result['fhir_base_url']}")
+            results[name] = result
         else:
-            # Try SMART configuration from MyChart base
-            smart_config = discover_smart_config(mychart_base)
-
-        if smart_config:
-            print(f"  ✓ SMART configuration found")
-            fhir_base = smart_config.get("fhir_base_url") or smart_config.get("issuer")
-            auth_endpoint = smart_config.get("authorization_endpoint")
-            token_endpoint = smart_config.get("token_endpoint")
-
-            results[name] = {
-                "fhir_base_url": fhir_base,
-                "authorization_endpoint": auth_endpoint,
-                "token_endpoint": token_endpoint,
-                "scopes_supported": smart_config.get("scopes_supported", []),
-            }
-
-            print(f"  FHIR Base URL: {fhir_base}")
-            print(f"  Auth Endpoint: {auth_endpoint}")
-            print(f"  Token Endpoint: {token_endpoint}")
-        else:
-            print(f"  ✗ No SMART configuration at well-known URL")
-            print(f"  Trying metadata probe...")
-
-            metadata = discover_fhir_metadata(mychart_base)
-            if metadata:
-                print(f"  ✓ Found FHIR endpoint via probe: {metadata['fhir_base_url']}")
-                results[name] = metadata
-            else:
-                print(f"  ✗ Could not discover endpoint automatically")
-                print(f"  → Try looking up on https://open.epic.com/MyApps/Endpoints")
-                results[name] = None
+            print(f"  ✗ Could not discover endpoint")
+            results[name] = None
 
     # Save results
     with open(ENDPOINTS_FILE, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\n\nResults saved to {ENDPOINTS_FILE}")
-    print("Copy the relevant URLs into your .env file.")
 
 
 if __name__ == "__main__":

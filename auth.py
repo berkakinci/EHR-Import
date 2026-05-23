@@ -28,6 +28,7 @@ import requests
 from config import (
     TOKEN_STORE, ENDPOINTS_FILE, ACTIVE_CLIENT_ID, REDIRECT_URI, DATA_DIR,
     JWK_PRIVATE_KEY_PATH, PROVIDERS, AUTH_METHODS,
+    CLIENT_ID, NON_PRODUCTION_CLIENT_ID, get_client_id,
 )
 
 # Scopes we need — must match the APIs registered on open.epic.com
@@ -115,7 +116,7 @@ def _load_jwk_kid() -> str:
     return jwks["keys"][0]["kid"]
 
 
-def build_client_assertion(token_endpoint: str) -> str:
+def build_client_assertion(token_endpoint: str, client_id: str = None) -> str:
     """
     Build a signed JWT for private_key_jwt authentication.
 
@@ -129,8 +130,8 @@ def build_client_assertion(token_endpoint: str) -> str:
 
     now = datetime.now(tz=timezone.utc)
     payload = {
-        "iss": ACTIVE_CLIENT_ID,
-        "sub": ACTIVE_CLIENT_ID,
+        "iss": client_id or ACTIVE_CLIENT_ID,
+        "sub": client_id or ACTIVE_CLIENT_ID,
         "aud": token_endpoint,
         "jti": str(uuid.uuid4()),
         "exp": now + timedelta(minutes=5),
@@ -278,7 +279,8 @@ def authorize(provider_name: str) -> dict:
     Tries each configured auth method (from config.json auth_methods array) in order
     during the token exchange. The first method that succeeds wins.
     """
-    if not ACTIVE_CLIENT_ID:
+    client_id = get_client_id(provider_name)
+    if not client_id:
         raise ValueError("No client ID configured")
 
     # Reset class-level state (in case of re-use within same process)
@@ -310,7 +312,7 @@ def authorize(provider_name: str) -> dict:
     # Build authorization URL
     auth_params = {
         "response_type": "code",
-        "client_id": ACTIVE_CLIENT_ID,
+        "client_id": client_id,
         "redirect_uri": redirect_uri,
         "scope": SCOPES,
         "state": state,
@@ -376,13 +378,13 @@ def authorize(provider_name: str) -> dict:
             "grant_type": "authorization_code",
             "code": CallbackHandler.auth_code,
             "redirect_uri": redirect_uri,
-            "client_id": ACTIVE_CLIENT_ID,
+            "client_id": client_id,
         }
 
         if method == "public":
             token_data["code_verifier"] = code_verifier
         elif method == "jwt":
-            assertion = build_client_assertion(token_endpoint)
+            assertion = build_client_assertion(token_endpoint, client_id)
             token_data["client_assertion_type"] = (
                 "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
             )
@@ -550,12 +552,12 @@ def refresh_access_token(provider_name: str, patient_id: str | None = None) -> d
     token_data = {
         "grant_type": "refresh_token",
         "refresh_token": tokens["refresh_token"],
-        "client_id": ACTIVE_CLIENT_ID,
+        "client_id": get_client_id(provider_name),
     }
 
     # Authenticate the refresh request
     if auth_method == "jwt":
-        assertion = build_client_assertion(token_endpoint)
+        assertion = build_client_assertion(token_endpoint, get_client_id(provider_name))
         token_data["client_assertion_type"] = (
             "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
         )

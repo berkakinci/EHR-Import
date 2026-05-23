@@ -47,12 +47,25 @@ CLIENT_ID = _active_app_config.get("client_id", _config.get("client_id", ""))
 NON_PRODUCTION_CLIENT_ID = _active_app_config.get("non_production_client_id", _config.get("non_production_client_id", ""))
 AUTH_METHODS = _active_app_config["auth_methods"]
 REDIRECT_URI = _config["redirect_uri"]
-SANDBOX_FHIR_BASE_URL = _config.get("sandbox_fhir_base_url", "")
 PROVIDERS = _config.get("providers", {})
 
-# Use non-production client ID for sandbox testing
-USE_SANDBOX = os.getenv("USE_SANDBOX", "").lower() in ("1", "true", "yes")
-ACTIVE_CLIENT_ID = NON_PRODUCTION_CLIENT_ID if USE_SANDBOX else CLIENT_ID
+
+def get_client_id(provider_name: str) -> str:
+    """Return the appropriate client ID for a provider.
+
+    Uses non-production client ID if the provider is flagged with
+    "non_production": true in config.json providers section.
+    Otherwise uses the production client ID.
+    """
+    provider_config = PROVIDERS.get(provider_name, {})
+    if provider_config.get("non_production"):
+        return NON_PRODUCTION_CLIENT_ID
+    return CLIENT_ID
+
+
+# Legacy: module-level ACTIVE_CLIENT_ID for any code that hasn't migrated yet.
+# Prefer get_client_id(provider_name) in new code.
+ACTIVE_CLIENT_ID = CLIENT_ID
 
 
 def print_config():
@@ -63,8 +76,8 @@ def print_config():
     print(f"Token store:       {TOKEN_STORE}")
     print(f"Endpoints file:    {ENDPOINTS_FILE}")
     print(f"Raw pulls:         {RAW_PULLS_DIR}")
-    print(f"Client ID:         {ACTIVE_CLIENT_ID}")
-    print(f"Sandbox mode:      {USE_SANDBOX}")
+    print(f"Client ID (prod):  {CLIENT_ID}")
+    print(f"Client ID (non-prod): {NON_PRODUCTION_CLIENT_ID}")
     print(f"Redirect URI:      {REDIRECT_URI}")
     print(f"JWK private key:   {JWK_PRIVATE_KEY_PATH} ({'exists' if JWK_PRIVATE_KEY_PATH.exists() else 'missing'})")
     print(f"Client secret:     {DATA_DIR / 'client_secret.txt'} ({'exists' if (DATA_DIR / 'client_secret.txt').exists() else 'missing'})")

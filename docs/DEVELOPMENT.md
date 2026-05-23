@@ -180,11 +180,12 @@ Content fetch tracking columns (`content_fetch_status`, `content_fetch_detail`, 
 ## Testing Against Epic Sandbox
 
 ```bash
-USE_SANDBOX=true python auth.py "Epic Sandbox"
-USE_SANDBOX=true python pull_data.py "Epic Sandbox"
+python auth.py "Epic Sandbox"
+python pull_data.py "Epic Sandbox"
 ```
 
-Uses the non-production client ID. Sandbox test credentials: `fhircamila` / `epicepic1`.
+Epic Sandbox is configured as a provider with `"non_production": true` in config.json,
+so it automatically uses the non-production client ID. Sandbox test credentials: `fhircamila` / `epicepic1`.
 
 ## Dependencies
 
