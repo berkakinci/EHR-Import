@@ -106,34 +106,18 @@ After marking ready:
 
 ## API Endpoints
 
-Select these R4 endpoints in the "Incoming APIs" list (alphabetized):
+For the `confidential` app, select **all patient-facing R4 endpoints** in the
+"Incoming APIs" list. This ensures complete data access across all organizations
+without needing to guess which subresources contain your data.
 
-- AllergyIntolerance.Search (Patient Chart) (R4)
-- Binary.Read (Clinical Notes) (R4)
-- Binary.Read (Labs) (R4)
-- Binary.Read (Study) (R4)
-- Binary.Search (Study) (R4)
-- Condition.Search (Care Plan Problem) (R4)
-- Condition.Search (Encounter Diagnosis) (R4)
-- Condition.Search (Health Concerns) (R4)
-- Condition.Search (Problems) (R4)
-- DiagnosticReport.Search (Results) (R4)
-- DocumentReference.Search (Clinical Notes) (R4)
-- DocumentReference.Search (Labs) (R4)
-- Encounter.Search (Patient Chart) (R4)
-- Media.Read (Study) (R4)
-- Media.Search (Study) (R4)
-- MedicationRequest.Search (Signed Medication Order) (R4)
-- Observation.Read (Labs) (R4)
-- Observation.Read (Study Finding) (R4)
-- Observation.Read (Vital Signs) (R4)
-- Observation.Search (Assessments) (R4)
-- Observation.Search (Labs) (R4)
-- Observation.Search (Social History) (R4)
-- Observation.Search (Study Finding) (R4)
-- Observation.Search (Vital Signs) (R4)
-- Patient.Read (Demographics) (R4)
-- Patient.Search (Demographics) (R4)
+Epic's API catalog has 600+ endpoints organized by resource type and subresource
+(e.g., `Condition.Search (Problems)`, `Condition.Search (Encounter Diagnosis)`).
+A single FHIR search for `Condition` may touch multiple subresources — if any are
+missing from your app registration, Epic returns partial results with a 4119
+OperationOutcome warning ("may not contain the entire record").
+
+**Important:** Once an app is marked "Ready for Production," you cannot change its
+API selections. If you need to add endpoints, you must register a new app.
 
 > **Note:** Without the Binary.Read endpoints, note and report content will return 403.
 > Without Observation.Read (Labs), the dedup logic cannot fetch referenced observations.

@@ -29,7 +29,8 @@ flowchart TD
 | `auth.py` | OAuth2 authorization code flow (public/secret/JWT), HTTPS callback server |
 | `pull_data.py` | FHIR data fetching, deduplication, storage |
 | `db.py` | SQLite schema, connection management |
-| `discover_endpoints.py` | Probes MyChart URLs to find FHIR base/auth/token endpoints |
+| `discover_endpoints.py` | Finds FHIR base/auth/token endpoints via Epic Brands Bundle |
+| `probe_subresources.py` | Diagnostic tool: queries each subresource individually to identify access restrictions |
 | `jwks.json` | Public key (JWKS) for JWT auth — production |
 | `jwks-nonprod.json` | Public key (JWKS) for JWT auth — non-production |
 | `setup/generate_jwk.py` | Generates RSA key pair for JWT auth |
@@ -54,7 +55,8 @@ flowchart TD
 - **HTTPS callback with retry loop** — Epic requires secure redirect URIs; the callback server loops to survive browser cert warnings and preflight requests on first use
 - **Per-provider redirect URI** — some providers behind the CHPPOC network have web application firewall (WAF) rules that block `localhost` in query strings; these use `lvh.me` (resolves to 127.0.0.1) as the redirect host instead. This is safe because PKCE protects the flow: even if `lvh.me` DNS were hijacked, the intercepted authorization code is useless without the `code_verifier` that never leaves your machine.
 - **Dual auth support** — public client (PKCE, no secrets) for open-source distribution; confidential client (JWT assertion) for personal use with refresh tokens
-- **Raw JSON preservation** — every pull saves raw FHIR responses alongside structured DB storage
+- **Raw JSON preservation** — every pull saves raw FHIR responses alongside structured DB storage; includes full OperationOutcome issue objects per resource type
+- **Unfiltered warning capture** — all OperationOutcome issues are stored in `pull_warnings` with full JSON, severity, code, text, and diagnostics. No pre-filtering — this is a forensic log for diagnosing access restrictions.
 - **Content fetch tracking** — notes and diagnostic reports track fetch status (`ok`, `fetch_failed`, `empty`, `no_attachment`) with the resolved URL, enabling automated retry of failed fetches
 - **Large binary content not yet handled** — all fetched Binary content (note text, report HTML) is stored inline in SQLite as `content_text`. This works for typical clinical notes (a few KB) but will bloat the database if imaging data (DICOM, large PDFs) is encountered. When that happens, large content should be written to disk (e.g., `files/{fhir_id}.{ext}`) with only the path stored in the database.
 
@@ -69,7 +71,7 @@ During token exchange, the app tries each configured method in order until one s
 
 ```json
 {
-    "active_app": "public",
+    "active_app": "confidential",
     "apps": {
         "public": {
             "client_id": "...",
@@ -77,6 +79,7 @@ During token exchange, the app tries each configured method in order until one s
         },
         "confidential": {
             "client_id": "...",
+            "non_production_client_id": "...",
             "auth_methods": ["jwt", "secret"]
         }
     }
@@ -172,6 +175,8 @@ See `db.py` for full schema. Tables:
 - `social_history` — social history observations (patient_id, code, value)
 - `assessments` — survey/questionnaire observations (patient_id, code, value, date)
 - `sync_log` — tracks pull history per provider
+- `pull_warnings` — append-only log of all OperationOutcome issues (severity, code, text, diagnostics, full JSON)
+- `data_status` — current completeness state per provider/patient/resource_type
 
 All data tables include `patient_id` (FHIR patient ID from the token response) to support multiple family members from the same provider. Unique constraint is `(fhir_id, patient_id)`.
 

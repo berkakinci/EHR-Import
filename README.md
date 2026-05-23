@@ -35,10 +35,10 @@ python pull_data.py "Boston Children's" --since 2024-06-01
 
 Each app in `config.json` declares its allowed `auth_methods` (tried in order during token exchange):
 
-| App | Auth methods | Refresh tokens |
-|-----|-------------|----------------|
-| `public` (default) | PKCE | ✗ (re-login each session) |
-| `confidential` | JWT assertion, client secret | ✓ |
+| App | Auth methods | Refresh tokens | Notes |
+|-----|-------------|----------------|-------|
+| `public` (default for open-source) | PKCE | ✗ (re-login each session) | No secrets needed |
+| `confidential` (personal use) | JWT assertion, client secret | ✓ | All patient-facing R4 APIs |
 
 For most users, the default public app works — just clone and run. For persistent
 access without re-login, see [DEVELOPMENT.md](docs/DEVELOPMENT.md) for confidential client setup.
@@ -49,8 +49,16 @@ access without re-login, see [DEVELOPMENT.md](docs/DEVELOPMENT.md) for confident
 - **Labs** — all lab results with values, units, reference ranges, dates
 - **Clinical notes** — visit notes, consult notes, discharge summaries (full text content)
 - **Diagnostic reports** — imaging, pathology, lab panels with presentedForm content
+- **Conditions** — diagnoses, problems, health concerns
+- **Vital signs** — height, weight, blood pressure, temperature, etc.
+- **Allergies** — allergens, reactions, criticality
+- **Encounters** — office visits, telehealth, ED visits, hospitalizations
+- **Medications** — active and historical prescriptions with dosage
+- **Social history** — smoking status, etc.
+- **Assessments** — survey/questionnaire results (PHQ-9, GAD-7, etc.)
 - Stored in a local SQLite database you can query however you like
-- Failed content fetches are tracked (status + URL) for easy retry
+- Raw FHIR JSON preserved alongside structured storage
+- OperationOutcome warnings captured in full for forensic analysis
 - Multi-patient support — pull records for family members from the same provider
 
 ## Supported Providers

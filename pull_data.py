@@ -74,18 +74,10 @@ def get_all_pages(base_url: str, resource_path: str, token: str, params: dict = 
     return entries, warnings
 
 
-# Well-known Epic OperationOutcome codes worth surfacing
-_NOTABLE_CODES = {
-    "4119": "incomplete_record",  # "may not contain the entire record"
-    "4101": "no_results",         # "Resource request returns no results"
-}
-
-
 def handle_warnings(warnings: list, resource_type: str, provider: str, patient_id: str, db=None):
-    """Print and optionally store OperationOutcome warnings from a FHIR search.
+    """Print and store OperationOutcome warnings from a FHIR search.
 
-    Code 4119 specifically means the server is withholding data that exists
-    (e.g., app registration missing the endpoint for this org).
+    All issues are stored unconditionally — this is a forensic log.
 
     - Appends to pull_warnings (historical log, never deleted).
     - Upserts data_status to reflect current completeness per resource_type.
@@ -93,12 +85,14 @@ def handle_warnings(warnings: list, resource_type: str, provider: str, patient_i
     has_incomplete = False
 
     for issue in warnings:
+        severity = issue.get("severity")
         code = None
         details = issue.get("details", {})
         for coding in details.get("coding", []):
             code = coding.get("code")
             break
-        text = details.get("text", issue.get("diagnostics", ""))
+        text = details.get("text", "")
+        diagnostics = issue.get("diagnostics", "")
 
         if code == "4119":
             has_incomplete = True
@@ -106,17 +100,21 @@ def handle_warnings(warnings: list, resource_type: str, provider: str, patient_i
                   f"but is not available to this app")
         elif code == "4101":
             pass  # "no results" is normal, don't spam
-        elif issue.get("severity") in ("error", "warning"):
-            print(f"  ⚠ {resource_type}: {text}")
+        elif severity in ("error", "warning"):
+            display = text or diagnostics
+            if display:
+                print(f"  ⚠ {resource_type}: {display}")
 
-        # Append to historical log
-        if db and code in _NOTABLE_CODES:
+        # Append to historical log — store everything
+        if db:
             try:
                 db.execute("""
                     INSERT INTO pull_warnings
-                    (provider, patient_id, resource_type, warning_code, warning_text)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (provider, patient_id, resource_type, code, text))
+                    (provider, patient_id, resource_type, severity, warning_code,
+                     warning_text, diagnostics, raw_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (provider, patient_id, resource_type, severity, code,
+                      text, diagnostics, json.dumps(issue)))
                 db.commit()
             except Exception:
                 pass
@@ -1024,12 +1022,17 @@ def pull_for_patient(provider_name: str, tokens: dict, since: str = None):
         patient_resource = fetch_patient_demographics(base_url, patient_id, access_token)
         store_patient(db, patient_resource, provider_name, patient_id)
 
+        # Collect warnings per resource type for raw storage
+        all_warnings = {}
+
         # Pull labs
         labs, w = pull_labs(base_url, patient_id, access_token, since)
+        all_warnings["labs"] = w
         handle_warnings(w, "Observation (labs)", provider_name, patient_id, db)
 
         # Pull diagnostic reports
         reports, w = pull_diagnostic_reports(base_url, patient_id, access_token, since)
+        all_warnings["reports"] = w
         handle_warnings(w, "DiagnosticReport", provider_name, patient_id, db)
 
         # Deduplicate: separate true labs from pathology/diagnostic text observations
@@ -1042,45 +1045,53 @@ def pull_for_patient(provider_name: str, tokens: dict, since: str = None):
 
         # Pull notes
         notes, w = pull_notes(base_url, patient_id, access_token, since)
+        all_warnings["notes"] = w
         handle_warnings(w, "DocumentReference (notes)", provider_name, patient_id, db)
         store_notes(db, notes, provider_name, patient_id, base_url, access_token)
 
         # Pull conditions
         conditions, w = pull_conditions(base_url, patient_id, access_token)
+        all_warnings["conditions"] = w
         handle_warnings(w, "Condition", provider_name, patient_id, db)
         store_conditions(db, conditions, provider_name, patient_id)
 
         # Pull vitals
         vitals, w = pull_vitals(base_url, patient_id, access_token, since)
+        all_warnings["vitals"] = w
         handle_warnings(w, "Observation (vitals)", provider_name, patient_id, db)
         store_vitals(db, vitals, provider_name, patient_id)
 
         # Pull allergies
         allergies, w = pull_allergies(base_url, patient_id, access_token)
+        all_warnings["allergies"] = w
         handle_warnings(w, "AllergyIntolerance", provider_name, patient_id, db)
         store_allergies(db, allergies, provider_name, patient_id)
 
         # Pull encounters
         encounters, w = pull_encounters(base_url, patient_id, access_token, since)
+        all_warnings["encounters"] = w
         handle_warnings(w, "Encounter", provider_name, patient_id, db)
         store_encounters(db, encounters, provider_name, patient_id)
 
         # Pull medications
         medications, w = pull_medications(base_url, patient_id, access_token, since)
+        all_warnings["medications"] = w
         handle_warnings(w, "MedicationRequest", provider_name, patient_id, db)
         store_medications(db, medications, provider_name, patient_id)
 
         # Pull social history
         social_history, w = pull_social_history(base_url, patient_id, access_token)
+        all_warnings["social_history"] = w
         handle_warnings(w, "Observation (social history)", provider_name, patient_id, db)
         store_social_history(db, social_history, provider_name, patient_id)
 
         # Pull assessments
         assessments, w = pull_assessments(base_url, patient_id, access_token, since)
+        all_warnings["assessments"] = w
         handle_warnings(w, "Observation (assessments)", provider_name, patient_id, db)
         store_assessments(db, assessments, provider_name, patient_id)
 
-        # Save raw data
+        # Save raw data (entries + warnings — full OperationOutcome issues preserved)
         RAW_PULLS_DIR.mkdir(exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         with open(RAW_PULLS_DIR / f"{provider_name}_{patient_id[:8]}_{timestamp}.json", "w") as f:
@@ -1095,6 +1106,7 @@ def pull_for_patient(provider_name: str, tokens: dict, since: str = None):
                 "medications": medications,
                 "social_history": social_history,
                 "assessments": assessments,
+                "warnings": all_warnings,
             }, f, indent=2)
 
         print(f"\n✓ Done. Raw data saved to {RAW_PULLS_DIR}/")

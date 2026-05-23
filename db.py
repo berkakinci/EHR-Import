@@ -212,8 +212,11 @@ def init_db():
             provider TEXT NOT NULL,
             patient_id TEXT NOT NULL,
             resource_type TEXT NOT NULL,
+            severity TEXT,
             warning_code TEXT,
             warning_text TEXT,
+            diagnostics TEXT,
+            raw_json TEXT,
             pulled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
