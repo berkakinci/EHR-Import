@@ -56,6 +56,7 @@ flowchart TD
 - **Dual auth support** — public client (PKCE, no secrets) for open-source distribution; confidential client (JWT assertion) for personal use with refresh tokens
 - **Raw JSON preservation** — every pull saves raw FHIR responses alongside structured DB storage
 - **Content fetch tracking** — notes and diagnostic reports track fetch status (`ok`, `fetch_failed`, `empty`, `no_attachment`) with the resolved URL, enabling automated retry of failed fetches
+- **Large binary content not yet handled** — all fetched Binary content (note text, report HTML) is stored inline in SQLite as `content_text`. This works for typical clinical notes (a few KB) but will bloat the database if imaging data (DICOM, large PDFs) is encountered. When that happens, large content should be written to disk (e.g., `files/{fhir_id}.{ext}`) with only the path stored in the database.
 
 ## Authentication Methods
 
