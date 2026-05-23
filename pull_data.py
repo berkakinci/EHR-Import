@@ -33,16 +33,22 @@ def fhir_get(base_url: str, resource_path: str, token: str, params: dict = None)
     return resp.json()
 
 
-def get_all_pages(base_url: str, resource_path: str, token: str, params: dict = None) -> list:
-    """Follow FHIR pagination to get all results."""
+def get_all_pages(base_url: str, resource_path: str, token: str, params: dict = None) -> tuple[list, list]:
+    """Follow FHIR pagination to get all results.
+
+    Returns (entries, warnings) where warnings is a list of OperationOutcome issue dicts.
+    """
     entries = []
+    warnings = []
     bundle = fhir_get(base_url, resource_path, token, params)
 
     while True:
         for entry in bundle.get("entry", []):
             resource = entry.get("resource", entry)
-            # Skip OperationOutcome resources (warnings/errors mixed into results)
+            # Collect OperationOutcome warnings instead of silently dropping
             if resource.get("resourceType") == "OperationOutcome":
+                for issue in resource.get("issue", []):
+                    warnings.append(issue)
                 continue
             entries.append(resource)
 
@@ -65,7 +71,87 @@ def get_all_pages(base_url: str, resource_path: str, token: str, params: dict = 
         resp.raise_for_status()
         bundle = resp.json()
 
-    return entries
+    return entries, warnings
+
+
+# Well-known Epic OperationOutcome codes worth surfacing
+_NOTABLE_CODES = {
+    "4119": "incomplete_record",  # "may not contain the entire record"
+    "4101": "no_results",         # "Resource request returns no results"
+}
+
+
+def handle_warnings(warnings: list, resource_type: str, provider: str, patient_id: str, db=None):
+    """Print and optionally store OperationOutcome warnings from a FHIR search.
+
+    Code 4119 specifically means the server is withholding data that exists
+    (e.g., app registration missing the endpoint for this org).
+
+    - Appends to pull_warnings (historical log, never deleted).
+    - Upserts data_status to reflect current completeness per resource_type.
+    """
+    has_incomplete = False
+
+    for issue in warnings:
+        code = None
+        details = issue.get("details", {})
+        for coding in details.get("coding", []):
+            code = coding.get("code")
+            break
+        text = details.get("text", issue.get("diagnostics", ""))
+
+        if code == "4119":
+            has_incomplete = True
+            print(f"  ⚠ {resource_type}: INCOMPLETE — server indicates more data exists "
+                  f"but is not available to this app")
+        elif code == "4101":
+            pass  # "no results" is normal, don't spam
+        elif issue.get("severity") in ("error", "warning"):
+            print(f"  ⚠ {resource_type}: {text}")
+
+        # Append to historical log
+        if db and code in _NOTABLE_CODES:
+            try:
+                db.execute("""
+                    INSERT INTO pull_warnings
+                    (provider, patient_id, resource_type, warning_code, warning_text)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (provider, patient_id, resource_type, code, text))
+                db.commit()
+            except Exception:
+                pass
+
+    # Update current status
+    if db:
+        try:
+            # Check previous state to detect transitions
+            prev = db.execute("""
+                SELECT complete FROM data_status
+                WHERE provider = ? AND patient_id = ? AND resource_type = ?
+            """, (provider, patient_id, resource_type)).fetchone()
+
+            was_incomplete = prev and prev[0] == 0
+
+            db.execute("""
+                INSERT INTO data_status (provider, patient_id, resource_type, complete, last_pulled_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(provider, patient_id, resource_type) DO UPDATE SET
+                    complete = excluded.complete,
+                    last_pulled_at = CURRENT_TIMESTAMP
+            """, (provider, patient_id, resource_type, 0 if has_incomplete else 1))
+
+            # Log the transition back to complete
+            if was_incomplete and not has_incomplete:
+                db.execute("""
+                    INSERT INTO pull_warnings
+                    (provider, patient_id, resource_type, warning_code, warning_text)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (provider, patient_id, resource_type, "resolved",
+                      "Previously incomplete data now returning successfully"))
+
+            db.commit()
+        except Exception:
+            pass
 
 
 def fetch_patient_demographics(base_url: str, patient_id: str, token: str) -> dict | None:
@@ -115,7 +201,7 @@ def store_patient(db, patient_resource: dict, provider: str, patient_id: str):
     print(f"  Patient: {given_name or '?'} {family_name or '?'} (DOB: {birth_date or 'unknown'})")
 
 
-def pull_labs(base_url: str, patient_id: str, token: str, since: str = None) -> list:
+def pull_labs(base_url: str, patient_id: str, token: str, since: str = None) -> tuple[list, list]:
     """Pull laboratory Observations."""
     params = {
         "patient": patient_id,
@@ -126,12 +212,12 @@ def pull_labs(base_url: str, patient_id: str, token: str, since: str = None) -> 
         params["date"] = f"ge{since}"
 
     print(f"  Fetching lab observations...")
-    labs = get_all_pages(base_url, "Observation", token, params)
+    labs, warnings = get_all_pages(base_url, "Observation", token, params)
     print(f"  → {len(labs)} lab results (raw)")
-    return labs
+    return labs, warnings
 
 
-def pull_diagnostic_reports(base_url: str, patient_id: str, token: str, since: str = None) -> list:
+def pull_diagnostic_reports(base_url: str, patient_id: str, token: str, since: str = None) -> tuple[list, list]:
     """Pull DiagnosticReports (lab panels, pathology, etc.)."""
     params = {
         "patient": patient_id,
@@ -141,9 +227,9 @@ def pull_diagnostic_reports(base_url: str, patient_id: str, token: str, since: s
         params["date"] = f"ge{since}"
 
     print(f"  Fetching diagnostic reports...")
-    reports = get_all_pages(base_url, "DiagnosticReport", token, params)
+    reports, warnings = get_all_pages(base_url, "DiagnosticReport", token, params)
     print(f"  → {len(reports)} diagnostic reports")
-    return reports
+    return reports, warnings
 
 
 def deduplicate_labs_and_reports(
@@ -209,7 +295,7 @@ def deduplicate_labs_and_reports(
     return cleaned_labs, diagnostic_obs
 
 
-def pull_notes(base_url: str, patient_id: str, token: str, since: str = None) -> list:
+def pull_notes(base_url: str, patient_id: str, token: str, since: str = None) -> tuple[list, list]:
     """Pull DocumentReferences (clinical notes)."""
     params = {
         "patient": patient_id,
@@ -220,9 +306,9 @@ def pull_notes(base_url: str, patient_id: str, token: str, since: str = None) ->
         params["date"] = f"ge{since}"
 
     print(f"  Fetching clinical notes...")
-    notes = get_all_pages(base_url, "DocumentReference", token, params)
+    notes, warnings = get_all_pages(base_url, "DocumentReference", token, params)
     print(f"  → {len(notes)} clinical notes")
-    return notes
+    return notes, warnings
 
 
 def extract_note_content(doc_ref: dict, base_url: str, token: str) -> tuple[str | None, str, str | None, str | None]:
@@ -482,7 +568,7 @@ def store_notes(db, notes: list, provider: str, patient_id: str, base_url: str, 
         print()
 
 
-def pull_conditions(base_url: str, patient_id: str, token: str) -> list:
+def pull_conditions(base_url: str, patient_id: str, token: str) -> tuple[list, list]:
     """Pull Condition resources (diagnoses, problems)."""
     params = {
         "patient": patient_id,
@@ -490,9 +576,9 @@ def pull_conditions(base_url: str, patient_id: str, token: str) -> list:
     }
 
     print(f"  Fetching conditions...")
-    conditions = get_all_pages(base_url, "Condition", token, params)
+    conditions, warnings = get_all_pages(base_url, "Condition", token, params)
     print(f"  → {len(conditions)} conditions")
-    return conditions
+    return conditions, warnings
 
 
 def store_conditions(db, conditions: list, provider: str, patient_id: str):
@@ -537,7 +623,7 @@ def store_conditions(db, conditions: list, provider: str, patient_id: str):
     print(f"  → Stored {stored} conditions")
 
 
-def pull_vitals(base_url: str, patient_id: str, token: str, since: str = None) -> list:
+def pull_vitals(base_url: str, patient_id: str, token: str, since: str = None) -> tuple[list, list]:
     """Pull vital signs Observations."""
     params = {
         "patient": patient_id,
@@ -548,9 +634,9 @@ def pull_vitals(base_url: str, patient_id: str, token: str, since: str = None) -
         params["date"] = f"ge{since}"
 
     print(f"  Fetching vital signs...")
-    vitals = get_all_pages(base_url, "Observation", token, params)
+    vitals, warnings = get_all_pages(base_url, "Observation", token, params)
     print(f"  → {len(vitals)} vital signs")
-    return vitals
+    return vitals, warnings
 
 
 def store_vitals(db, vitals: list, provider: str, patient_id: str):
@@ -580,7 +666,7 @@ def store_vitals(db, vitals: list, provider: str, patient_id: str):
     print(f"  → Stored {stored} vital signs")
 
 
-def pull_allergies(base_url: str, patient_id: str, token: str) -> list:
+def pull_allergies(base_url: str, patient_id: str, token: str) -> tuple[list, list]:
     """Pull AllergyIntolerance resources."""
     params = {
         "patient": patient_id,
@@ -588,9 +674,9 @@ def pull_allergies(base_url: str, patient_id: str, token: str) -> list:
     }
 
     print(f"  Fetching allergies...")
-    allergies = get_all_pages(base_url, "AllergyIntolerance", token, params)
+    allergies, warnings = get_all_pages(base_url, "AllergyIntolerance", token, params)
     print(f"  → {len(allergies)} allergies")
-    return allergies
+    return allergies, warnings
 
 
 def store_allergies(db, allergies: list, provider: str, patient_id: str):
@@ -646,7 +732,7 @@ def store_allergies(db, allergies: list, provider: str, patient_id: str):
     print(f"  → Stored {stored} allergies")
 
 
-def pull_encounters(base_url: str, patient_id: str, token: str, since: str = None) -> list:
+def pull_encounters(base_url: str, patient_id: str, token: str, since: str = None) -> tuple[list, list]:
     """Pull Encounter resources."""
     params = {
         "patient": patient_id,
@@ -656,9 +742,9 @@ def pull_encounters(base_url: str, patient_id: str, token: str, since: str = Non
         params["date"] = f"ge{since}"
 
     print(f"  Fetching encounters...")
-    encounters = get_all_pages(base_url, "Encounter", token, params)
+    encounters, warnings = get_all_pages(base_url, "Encounter", token, params)
     print(f"  → {len(encounters)} encounters")
-    return encounters
+    return encounters, warnings
 
 
 def store_encounters(db, encounters: list, provider: str, patient_id: str):
@@ -706,7 +792,7 @@ def store_encounters(db, encounters: list, provider: str, patient_id: str):
     print(f"  → Stored {stored} encounters")
 
 
-def pull_medications(base_url: str, patient_id: str, token: str, since: str = None) -> list:
+def pull_medications(base_url: str, patient_id: str, token: str, since: str = None) -> tuple[list, list]:
     """Pull MedicationRequest resources."""
     params = {
         "patient": patient_id,
@@ -716,9 +802,9 @@ def pull_medications(base_url: str, patient_id: str, token: str, since: str = No
         params["date"] = f"ge{since}"
 
     print(f"  Fetching medication requests...")
-    meds = get_all_pages(base_url, "MedicationRequest", token, params)
+    meds, warnings = get_all_pages(base_url, "MedicationRequest", token, params)
     print(f"  → {len(meds)} medication requests")
-    return meds
+    return meds, warnings
 
 
 def store_medications(db, medications: list, provider: str, patient_id: str):
@@ -764,7 +850,7 @@ def store_medications(db, medications: list, provider: str, patient_id: str):
     print(f"  → Stored {stored} medication requests")
 
 
-def pull_social_history(base_url: str, patient_id: str, token: str) -> list:
+def pull_social_history(base_url: str, patient_id: str, token: str) -> tuple[list, list]:
     """Pull social history Observations."""
     params = {
         "patient": patient_id,
@@ -773,9 +859,9 @@ def pull_social_history(base_url: str, patient_id: str, token: str) -> list:
     }
 
     print(f"  Fetching social history...")
-    obs = get_all_pages(base_url, "Observation", token, params)
+    obs, warnings = get_all_pages(base_url, "Observation", token, params)
     print(f"  → {len(obs)} social history observations")
-    return obs
+    return obs, warnings
 
 
 def store_social_history(db, observations: list, provider: str, patient_id: str):
@@ -804,7 +890,7 @@ def store_social_history(db, observations: list, provider: str, patient_id: str)
     print(f"  → Stored {stored} social history observations")
 
 
-def pull_assessments(base_url: str, patient_id: str, token: str, since: str = None) -> list:
+def pull_assessments(base_url: str, patient_id: str, token: str, since: str = None) -> tuple[list, list]:
     """Pull assessment/survey Observations."""
     params = {
         "patient": patient_id,
@@ -815,9 +901,9 @@ def pull_assessments(base_url: str, patient_id: str, token: str, since: str = No
         params["date"] = f"ge{since}"
 
     print(f"  Fetching assessments...")
-    obs = get_all_pages(base_url, "Observation", token, params)
+    obs, warnings = get_all_pages(base_url, "Observation", token, params)
     print(f"  → {len(obs)} assessments")
-    return obs
+    return obs, warnings
 
 
 def store_assessments(db, observations: list, provider: str, patient_id: str):
@@ -939,10 +1025,12 @@ def pull_for_patient(provider_name: str, tokens: dict, since: str = None):
         store_patient(db, patient_resource, provider_name, patient_id)
 
         # Pull labs
-        labs = pull_labs(base_url, patient_id, access_token, since)
+        labs, w = pull_labs(base_url, patient_id, access_token, since)
+        handle_warnings(w, "Observation (labs)", provider_name, patient_id, db)
 
         # Pull diagnostic reports
-        reports = pull_diagnostic_reports(base_url, patient_id, access_token, since)
+        reports, w = pull_diagnostic_reports(base_url, patient_id, access_token, since)
+        handle_warnings(w, "DiagnosticReport", provider_name, patient_id, db)
 
         # Deduplicate: separate true labs from pathology/diagnostic text observations
         labs, diagnostic_obs = deduplicate_labs_and_reports(labs, reports, base_url, access_token)
@@ -953,35 +1041,43 @@ def pull_for_patient(provider_name: str, tokens: dict, since: str = None):
         store_diagnostic_reports(db, reports, provider_name, patient_id, base_url, access_token)
 
         # Pull notes
-        notes = pull_notes(base_url, patient_id, access_token, since)
+        notes, w = pull_notes(base_url, patient_id, access_token, since)
+        handle_warnings(w, "DocumentReference (notes)", provider_name, patient_id, db)
         store_notes(db, notes, provider_name, patient_id, base_url, access_token)
 
         # Pull conditions
-        conditions = pull_conditions(base_url, patient_id, access_token)
+        conditions, w = pull_conditions(base_url, patient_id, access_token)
+        handle_warnings(w, "Condition", provider_name, patient_id, db)
         store_conditions(db, conditions, provider_name, patient_id)
 
         # Pull vitals
-        vitals = pull_vitals(base_url, patient_id, access_token, since)
+        vitals, w = pull_vitals(base_url, patient_id, access_token, since)
+        handle_warnings(w, "Observation (vitals)", provider_name, patient_id, db)
         store_vitals(db, vitals, provider_name, patient_id)
 
         # Pull allergies
-        allergies = pull_allergies(base_url, patient_id, access_token)
+        allergies, w = pull_allergies(base_url, patient_id, access_token)
+        handle_warnings(w, "AllergyIntolerance", provider_name, patient_id, db)
         store_allergies(db, allergies, provider_name, patient_id)
 
         # Pull encounters
-        encounters = pull_encounters(base_url, patient_id, access_token, since)
+        encounters, w = pull_encounters(base_url, patient_id, access_token, since)
+        handle_warnings(w, "Encounter", provider_name, patient_id, db)
         store_encounters(db, encounters, provider_name, patient_id)
 
         # Pull medications
-        medications = pull_medications(base_url, patient_id, access_token, since)
+        medications, w = pull_medications(base_url, patient_id, access_token, since)
+        handle_warnings(w, "MedicationRequest", provider_name, patient_id, db)
         store_medications(db, medications, provider_name, patient_id)
 
         # Pull social history
-        social_history = pull_social_history(base_url, patient_id, access_token)
+        social_history, w = pull_social_history(base_url, patient_id, access_token)
+        handle_warnings(w, "Observation (social history)", provider_name, patient_id, db)
         store_social_history(db, social_history, provider_name, patient_id)
 
         # Pull assessments
-        assessments = pull_assessments(base_url, patient_id, access_token, since)
+        assessments, w = pull_assessments(base_url, patient_id, access_token, since)
+        handle_warnings(w, "Observation (assessments)", provider_name, patient_id, db)
         store_assessments(db, assessments, provider_name, patient_id)
 
         # Save raw data
@@ -1003,6 +1099,19 @@ def pull_for_patient(provider_name: str, tokens: dict, since: str = None):
 
         print(f"\n✓ Done. Raw data saved to {RAW_PULLS_DIR}/")
         print(f"  Database: {DB_PATH}")
+
+        # Show completeness warnings for this patient
+        warnings_for_patient = db.execute(
+            "SELECT resource_type FROM pull_warnings "
+            "WHERE provider = ? AND patient_id = ? AND warning_code = '4119'",
+            (provider_name, patient_id),
+        ).fetchall()
+        if warnings_for_patient:
+            incomplete_types = [r[0] for r in warnings_for_patient]
+            print(f"\n  ⚠ Incomplete data ({len(incomplete_types)} resource types withheld by server):")
+            for rt in incomplete_types:
+                print(f"    - {rt}")
+            print("    → Check app registration / org activation on open.epic.com")
 
     except PermissionError:
         print("\nToken expired. Attempting refresh...")

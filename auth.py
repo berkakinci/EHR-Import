@@ -30,7 +30,7 @@ from config import (
     JWK_PRIVATE_KEY_PATH, PROVIDERS, AUTH_METHODS,
 )
 
-# Scopes we need for labs + notes
+# Scopes we need — must match the APIs registered on open.epic.com
 SCOPES = " ".join([
     "openid",
     "fhirUser",
@@ -41,6 +41,8 @@ SCOPES = " ".join([
     "patient/DocumentReference.read",
     "patient/Encounter.read",
     "patient/Condition.read",
+    "patient/MedicationRequest.read",
+    "patient/AllergyIntolerance.read",
 ])
 
 # Self-signed cert paths (for local HTTPS callback)

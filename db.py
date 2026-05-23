@@ -207,6 +207,25 @@ def init_db():
             UNIQUE(fhir_id, patient_id)
         );
 
+        CREATE TABLE IF NOT EXISTS pull_warnings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT NOT NULL,
+            patient_id TEXT NOT NULL,
+            resource_type TEXT NOT NULL,
+            warning_code TEXT,
+            warning_text TEXT,
+            pulled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS data_status (
+            provider TEXT NOT NULL,
+            patient_id TEXT NOT NULL,
+            resource_type TEXT NOT NULL,
+            complete INTEGER NOT NULL DEFAULT 1,
+            last_pulled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (provider, patient_id, resource_type)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_labs_provider ON labs(provider);
         CREATE INDEX IF NOT EXISTS idx_labs_patient ON labs(patient_id);
         CREATE INDEX IF NOT EXISTS idx_labs_date ON labs(effective_date);
@@ -244,6 +263,50 @@ def init_db():
     conn.close()
 
 
+def get_incomplete_resources(db=None) -> list[dict]:
+    """Return a list of provider/patient/resource_type combos currently marked incomplete.
+
+    Each entry: {provider, patient_id, patient_name, resource_type, last_pulled_at}
+    """
+    if db is None:
+        db = get_db()
+    rows = db.execute("""
+        SELECT s.provider, s.patient_id, s.resource_type, s.last_pulled_at,
+               COALESCE(p.given_name || ' ' || p.family_name, s.patient_id) as patient_name
+        FROM data_status s
+        LEFT JOIN patients p ON p.patient_id = s.patient_id
+        WHERE s.complete = 0
+        ORDER BY s.provider, patient_name, s.resource_type
+    """).fetchall()
+    return [dict(r) for r in rows]
+
+
+def print_data_completeness():
+    """Print a summary of data completeness across all providers/patients."""
+    db = get_db()
+    incomplete = get_incomplete_resources(db)
+
+    if not incomplete:
+        print("✓ No incomplete data warnings recorded.")
+        return
+
+    print("⚠ Incomplete data (server withheld records — likely app registration gap):\n")
+    current_provider = None
+    for row in incomplete:
+        if row["provider"] != current_provider:
+            current_provider = row["provider"]
+            print(f"  {current_provider}:")
+        print(f"    {row['patient_name']:20s}  {row['resource_type']}")
+    print(f"\n  Total: {len(incomplete)} gaps across "
+          f"{len(set(r['provider'] for r in incomplete))} provider(s)")
+    db.close()
+
+
 if __name__ == "__main__":
-    init_db()
-    print(f"Database initialized at {DB_PATH}")
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "status":
+        print_data_completeness()
+    else:
+        init_db()
+        print(f"Database initialized at {DB_PATH}")
+        print("\nTip: run 'python db.py status' to check data completeness")

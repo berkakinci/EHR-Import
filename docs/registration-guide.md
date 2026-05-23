@@ -151,10 +151,16 @@ patient/DiagnosticReport.read
 patient/DocumentReference.read
 patient/Encounter.read
 patient/Condition.read
+patient/MedicationRequest.read
+patient/AllergyIntolerance.read
 ```
 
 You don't configure scopes during registration — they're requested at runtime in the
 authorization URL. Epic grants them based on which APIs are selected on the app registration.
+
+**Important:** If you register an API endpoint but don't request its corresponding scope,
+some Epic organizations will return empty results instead of an error. Always keep this
+scope list in sync with your registered APIs.
 
 ## Finding Your Provider's FHIR Endpoint
 
