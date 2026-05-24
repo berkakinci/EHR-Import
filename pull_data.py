@@ -609,13 +609,22 @@ def fetch_and_store_patient(base_url: str, patient_id: str, token: str, provider
 
 def pull_for_patient(provider_name: str, tokens: dict, since: str = None):
     """Pull all configured resources for a single patient."""
-    access_token = tokens["access_token"]
-    base_url = tokens["fhir_base_url"]
     patient_id = tokens.get("patient")
 
     if not patient_id:
         print("No patient ID in token response.")
         return
+
+    # Proactive token refresh — ensures we have a fresh access token before starting.
+    # Skipped for public clients (no refresh token).
+    if tokens.get("refresh_token"):
+        try:
+            tokens = refresh_access_token(provider_name, patient_id)
+        except Exception as e:
+            print(f"  ⚠ Token refresh failed ({e}), trying with existing token...")
+
+    access_token = tokens["access_token"]
+    base_url = tokens["fhir_base_url"]
 
     print(f"\n{'='*60}")
     print(f"Pulling data from: {provider_name}")
@@ -665,15 +674,10 @@ def pull_for_patient(provider_name: str, tokens: dict, since: str = None):
                 print(f"    - {rt}")
 
     except PermissionError:
-        print("\nToken expired. Attempting refresh...")
-        try:
-            refresh_access_token(provider_name, patient_id)
-            print("Token refreshed. Please run again.")
-        except Exception as e:
-            print(f"Refresh failed: {e}")
-            print(f"Re-authenticate: python auth.py \"{provider_name}\"")
-    finally:
-        db.close()
+        print("\n✗ Token rejected by server. Re-authenticate:")
+        print(f"  python auth.py \"{provider_name}\"")
+
+    db.close()
 
 
 def main():
