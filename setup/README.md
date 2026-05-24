@@ -14,13 +14,13 @@ conda create -n ehr-import python=3.12 && conda activate ehr-import
 bash setup/setup_env.sh
 
 # 3. Discover your providers' FHIR endpoints
-python discover_endpoints.py
+python discover.py
 
 # 4. Authenticate with a provider (opens browser)
 python auth.py "Boston Children's"
 
 # 5. Pull your data
-python pull_data.py "Boston Children's"
+python pull.py "Boston Children's"
 ```
 
 ## What Each Script Does
@@ -49,7 +49,7 @@ Override by setting `DATA_DIR` in a `.env` file (see `.env.example`).
 Run `python setup/verify_setup.py` to diagnose issues. Common problems:
 
 - **"cryptography not installed"** — run `pip install -r requirements.txt`
-- **"No discovered endpoints"** — run `python discover_endpoints.py`
+- **"No discovered endpoints"** — run `python discover.py`
 - **Browser cert warning** — expected for self-signed certs; click "Advanced" → "Proceed"
 - **"Token expired"** — for public clients, re-run `python auth.py "<provider>"` (no refresh tokens)
 - **Want refresh tokens?** — set up a confidential client (see `docs/registration-guide.md`)

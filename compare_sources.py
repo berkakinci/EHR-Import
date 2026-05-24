@@ -5,7 +5,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from tools.compare import RESOURCE_MAP, count_fhir, count_ehi, format_delta
+from ehr_import.tools.compare import RESOURCE_MAP, count_fhir, count_ehi, format_delta
 
 parser = argparse.ArgumentParser(
     description="Compare record counts across EHI export and FHIR API pulls"

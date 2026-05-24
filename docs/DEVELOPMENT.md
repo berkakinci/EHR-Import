@@ -35,11 +35,11 @@ ehr_import/                  — Python package (core logic)
   pull.py                    — orchestration: pull_for_patient, pull loop, raw archival
   discover.py                — endpoint discovery via Epic Brands Bundle
 
-tools/                       — Standalone diagnostic/utility scripts
-  __init__.py
-  probe.py                   — probe_subresources: identifies access restrictions per subresource
-  compare.py                 — compare_sources: record count comparison across EHI/FHIR sources
-  ehi_import.py              — imports Epic EHI (Requested Record) TSV exports into SQLite
+  tools/                     — Diagnostic/utility modules
+    __init__.py
+    probe.py                 — probe_subresources: identifies access restrictions per subresource
+    compare.py               — compare_sources: record count comparison across EHI/FHIR sources
+    ehi_import.py            — imports Epic EHI (Requested Record) TSV exports into SQLite
 
 Top-level entry points (thin wrappers):
   auth.py                    → ehr_import.auth.main()

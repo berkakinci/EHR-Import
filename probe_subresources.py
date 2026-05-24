@@ -3,7 +3,7 @@
 import sys
 
 from ehr_import.auth import load_tokens, load_all_tokens_for_provider
-from tools.probe import run_probes
+from ehr_import.tools.probe import run_probes
 
 if len(sys.argv) < 2:
     print("Usage: python probe_subresources.py <provider_name> [--patient <patient_id>]")

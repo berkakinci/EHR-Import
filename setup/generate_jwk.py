@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Generate an RSA key pair for JWT-based authentication (private_key_jwt).
 

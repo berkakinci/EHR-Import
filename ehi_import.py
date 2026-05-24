@@ -3,7 +3,7 @@
 import argparse
 from pathlib import Path
 
-from tools.ehi_import import build_database
+from ehr_import.tools.ehi_import import build_database
 
 parser = argparse.ArgumentParser(
     description="Import an Epic EHI export into SQLite (imports everything)"

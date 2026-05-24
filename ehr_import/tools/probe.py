@@ -16,8 +16,8 @@ from datetime import datetime
 
 import requests
 
-from ehr_import import config
-from ehr_import.auth import refresh_access_token
+from .. import config
+from ..auth import refresh_access_token
 
 
 # Each entry: (resource_path, params_override, label)
