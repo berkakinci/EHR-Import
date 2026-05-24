@@ -1,95 +1,145 @@
 # EHR Import
 
-Pull your personal health records (labs, clinical notes) from Epic-based EHRs (Electronic Health Records) into a local database.
+Download your health records from any Epic MyChart system to your own computer.
 
-Uses the FHIR R4 API with SMART on FHIR authentication — you log in with your MyChart credentials and the app downloads your data. Everything stays on your machine.
+You log in with your MyChart credentials, and the tool pulls your data into a local SQLite database. No cloud, no third parties — your records stay on your machine.
 
-No app registration needed — the included client ID works for any Epic MyChart system.
+Works out of the box. No app registration needed.
+
+> **[View on GitHub](https://github.com/berkakinci/EHR-Import)** — source code, issues, and setup instructions
+
+## Who This Is For
+
+- Patients who want a local copy of their health data
+- Parents/guardians pulling records for family members
+- Anyone building personal health tools on top of their own EHR data
+
+## What You Get
+
+Labs, clinical notes, medications, conditions, vitals, allergies, encounters, immunizations, procedures, diagnostic reports, and more — 15 resource types total. Stored in a queryable SQLite database.
 
 ## Quick Start
 
 ```bash
-# 1. Set up environment and install dependencies
+# Set up (one time)
 bash setup/setup_env.sh
-
-# 2. Verify configuration
 python setup/verify_setup.py
 
-# 3. Discover your provider's FHIR endpoints
+# Find your provider's API endpoint
 python discover.py
 
-# 4. Authenticate (opens browser for MyChart login)
-python auth.py "Boston Children's"
+# Log in (opens browser)
+python auth.py "Your Provider Name"
 
-# 5. Pull your records (all authorized patients at this provider)
-python pull.py "Boston Children's"
-
-# 6. Pull a specific patient only
-python pull.py "Boston Children's" --patient <patient_id>
-
-# 7. Pull only new records since a date
-python pull.py "Boston Children's" --since 2024-06-01
+# Download your records
+python pull.py "Your Provider Name"
 ```
 
-## Authentication
+That's it. Your data is now in `ehr_data.db`.
 
-Each app in `config.json` declares its allowed `auth_methods` (tried in order during token exchange):
+## Adding Your Provider
 
-| App | Auth methods | Refresh tokens | Notes |
-|-----|-------------|----------------|-------|
-| `public` (default for open-source) | PKCE | ✗ (re-login each session) | No secrets needed |
-| `confidential` (personal use) | JWT assertion, client secret | ✓ | All patient-facing R4 APIs |
+Any Epic-based health system with MyChart works. Add it to `config.json` and run `python discover.py`. See the [setup guide](setup/README.md) for the config format.
 
-For most users, the default public app works — just clone and run. For persistent
-access without re-login, see [DEVELOPMENT.md](docs/DEVELOPMENT.md) for confidential client setup.
+## Full Record Export (EHI)
 
-## What You Get
-
-- **Patient demographics** — name, date of birth
-- **Labs** — all lab results with values, units, reference ranges, dates
-- **Clinical notes** — visit notes, consult notes, discharge summaries (full text content)
-- **Diagnostic reports** — imaging, pathology, lab panels with presentedForm content
-- **Conditions** — diagnoses, problems, health concerns
-- **Vital signs** — height, weight, blood pressure, temperature, etc.
-- **Allergies** — allergens, reactions, criticality (case-deduplicated)
-- **Encounters** — office visits, telehealth, ED visits, hospitalizations
-- **Medications** — active and historical prescriptions with dosage; `reported` flag distinguishes native vs outside/patient-reported
-- **Social history** — smoking status, etc.
-- **Assessments** — survey/questionnaire results (PHQ-9, GAD-7, etc.)
-- **Immunizations** — vaccination records
-- **Medication dispenses** — pharmacy dispensing records
-- **Procedures** — surgical and clinical procedures
-- **Care plans** and **Goals** — treatment plans and patient goals
-- Stored in a local SQLite database you can query however you like
-- Generic `resources` table holds every FHIR resource as raw JSON; convenience tables provide curated columns for the types above
-- OperationOutcome warnings captured in full for forensic analysis
-- Multi-patient support — pull records for family members from the same provider
-
-## EHI Export (Full Record Import)
-
-In addition to the live FHIR API, you can import a complete record export requested through MyChart. This gives you access to data the API may withhold (notes, encounters, billing, etc.).
+The FHIR API doesn't return everything. Under the Cures Act, you can request your complete record through MyChart (Menu → Health → Request My Records → Computer-Readable Format). Once you have the ZIP:
 
 ```bash
-# Import the entire EHI export (all TSV tables + RTF/C-CDA/Media files)
 python ehi_import.py --source /path/to/Extracted --db ./ehi_export.db
 ```
 
-See [docs/ehi-import.md](docs/ehi-import.md) for details on requesting and using EHI exports.
-
-## Supported Providers
-
-Any Epic-based health system with MyChart. Pre-configured:
-
-| Config name | Organization | MyChart URL |
-|-------------|--------------|-------------|
-| Boston Children's | Boston Children's Hospital | mychart.childrenshospital.org |
-| Tufts | Tufts Medicine | mytuftsmed.org |
-| Andover Pedi | Pediatric Physicians' Organization at Children's (CHPPOC) | mychart.chppoc.org |
-
-Add your own by editing `config.json`.
+See [docs/ehi-import.md](docs/ehi-import.md) for details.
 
 ## Privacy
 
-All private data (tokens, database, raw API responses) is stored in a separate
-directory outside this repo (`../EHR Import Private/` by default). Nothing
-sensitive is committed to git. Override the location with `DATA_DIR` in `.env`.
+All tokens, databases, and API responses are stored outside this repo in a private sibling directory. Nothing sensitive touches git.
+
+---
+
+## Reference
+
+### All Commands
+
+```bash
+# Discover endpoints for all configured providers
+python discover.py
+
+# Authenticate (opens browser for MyChart login)
+python auth.py "Boston Children's"
+
+# Pull all authorized patients at a provider
+python pull.py "Boston Children's"
+
+# Pull a specific patient only
+python pull.py "Boston Children's" --patient <patient_id>
+
+# Pull only records since a date
+python pull.py "Boston Children's" --since 2024-06-01
+
+# Check database status (record counts, completeness)
+python db.py status
+
+# Import an EHI export
+python ehi_import.py --source /path/to/Extracted --db ./ehi_export.db
+
+# Compare FHIR pull vs EHI export
+python compare_sources.py --ehi ./ehi_export.db --fhir ./ehr_data.db \
+    --provider "Boston Children's" --patient <patient_id>
+
+# Probe access restrictions per sub-resource
+python probe_subresources.py "Boston Children's" --patient <patient_id>
+```
+
+### Multi-Patient / Family Members
+
+Re-authenticating at the same provider with a different account accumulates tokens (doesn't overwrite). `pull.py` pulls all authorized patients by default; use `--patient` to target one.
+
+This supports family members via proxy access — log in as yourself, select the family member at the account selection screen, and their records are pulled under their own `patient_id`.
+
+### Pre-Configured Providers
+
+| Config key | Organization | MyChart URL |
+|------------|--------------|-------------|
+| Boston Children's | Boston Children's Hospital | mychart.childrenshospital.org |
+| Tufts | Tufts Medicine | mytuftsmed.org |
+| Andover Pedi | Pediatric Physicians' Organization at Children's | mychart.chppoc.org |
+
+Add your own by editing `config.json` — provide a `portal_url` or `hint` for endpoint discovery.
+
+### Authentication Options
+
+| App | Auth methods | Refresh tokens | Use case |
+|-----|-------------|----------------|----------|
+| `public` (default) | PKCE | ✗ (re-login each session) | No secrets needed — just clone and run |
+| `confidential` | JWT assertion, client secret | ✓ | Persistent access without re-login |
+
+### What Gets Pulled
+
+| Data | FHIR Resource | DB Table |
+|------|--------------|----------|
+| Lab results | Observation (laboratory) | `labs` |
+| Vital signs | Observation (vital-signs) | `vitals` |
+| Clinical notes | DocumentReference | `notes` |
+| Diagnostic reports | DiagnosticReport | `diagnostic_reports` |
+| Conditions | Condition | `conditions` |
+| Allergies | AllergyIntolerance | `allergies` |
+| Encounters | Encounter | `encounters` |
+| Medications | MedicationRequest | `medications` |
+| Social history | Observation (social-history) | `social_history` |
+| Assessments | Observation (survey) | `assessments` |
+| Immunizations | Immunization | `immunizations` |
+| Medication dispenses | MedicationDispense | `medication_dispenses` |
+| Procedures | Procedure | `procedures` |
+| Care plans | CarePlan | `care_plans` |
+| Goals | Goal | `goals` |
+
+All resources are also stored as raw JSON in a generic `resources` table — query it directly if you need fields not in the convenience tables.
+
+## Documentation
+
+- [Setup guide](setup/README.md)
+- [For Developers](docs/DEVELOPMENT.md)
+- [Project spec](docs/SPEC.md)
+- [Epic app registration](docs/registration-guide.md) (only needed for advanced/confidential client use)
+- [EHI export guide](docs/ehi-import.md)

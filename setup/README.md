@@ -13,15 +13,42 @@ conda create -n ehr-import python=3.12 && conda activate ehr-import
 # 2. Run setup (installs deps, generates cert, verifies config)
 bash setup/setup_env.sh
 
-# 3. Discover your providers' FHIR endpoints
+# 3. (Optional) Add your providers to config.json — see below
+
+# 4. Discover your providers' FHIR endpoints
 python discover.py
-
-# 4. Authenticate with a provider (opens browser)
-python auth.py "Boston Children's"
-
-# 5. Pull your data
-python pull.py "Boston Children's"
 ```
+
+Then follow the [main README](../README.md) for authentication and pulling data.
+
+## Adding Your Providers
+
+The repo ships with a few pre-configured providers. To add your own, edit the `providers` section of `config.json`:
+
+```json
+{
+    "providers": {
+        "My Hospital": {
+            "portal_url": "https://mychart.myhospital.org/MyChart"
+        },
+        "My Clinic": {
+            "hint": "Springfield Medical Group"
+        }
+    }
+}
+```
+
+The key (`"My Hospital"`) is the name you'll use in `auth.py` and `pull.py` commands.
+
+**Discovery options** (provide one):
+
+| Field | When to use | Example |
+|-------|-------------|---------|
+| `portal_url` | You know the MyChart URL | `"https://mychart.childrenshospital.org/MyChart"` |
+| `hint` | Search by organization name | `"Pediatric Physicians"` |
+| `fhir_base` | You already know the FHIR endpoint | `"https://fhir.epic.com/.../api/FHIR/R4"` |
+
+After adding a provider, run `python discover.py` to find its FHIR API endpoints.
 
 ## What Each Script Does
 
@@ -35,7 +62,7 @@ python pull.py "Boston Children's"
 ## Prerequisites
 
 - Python 3.11+
-- A MyChart account with one of the configured providers
+- A patient portal account with a provider that supports FHIR R4 (currently tested with Epic MyChart systems)
 - The app's client ID is already in `config.json` (included in the repo)
 
 ## Data Directory

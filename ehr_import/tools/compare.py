@@ -39,7 +39,9 @@ RESOURCE_MAP = [
     (
         "Reports",
         "diagnostic_reports",
-        "SELECT COUNT(*) FROM ORDER_PROC",
+        # ORDER_PROC includes labs, imaging, referrals, etc.
+        # Exclude labs (ORDER_TYPE_C_NAME='Lab') since those map to Observation in FHIR.
+        "SELECT COUNT(*) FROM ORDER_PROC WHERE ORDER_TYPE_C_NAME != 'Lab'",
     ),
     (
         "Notes",

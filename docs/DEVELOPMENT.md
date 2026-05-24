@@ -183,6 +183,65 @@ After marking an app "Ready for Production" on open.epic.com:
 5. Leave "Use App-level Endpoint URIs" checked unless redirect URIs vary per org (our single localhost redirect works fine at app level)
 6. There may be a sync delay (up to 1 business day) before the org recognizes the client ID
 
+## Access Restrictions (OperationOutcome Codes)
+
+Epic returns OperationOutcome issues alongside FHIR results to signal incomplete data.
+These are captured in the `pull_warnings` table for forensic analysis.
+
+### Warning Codes
+
+| Code | Level | Meaning |
+|------|-------|---------|
+| 4119 | Generic | "May not contain the entire record." Attached to nearly every response — even when data is actually complete (e.g., labs 120/120). Signals that *some* sub-resource category was withheld, but doesn't name which. |
+| 59204 | App-level | "Client not authorized for [Resource] - [Sub-resource]." The **app registration** is missing a specific API endpoint. Affects all users equally regardless of login. Fix: register a new app with the missing endpoints (production-locked apps cannot be modified). |
+| 59205 | User-level | "User not authorized for [Resource] - Outside Record." The **authenticated user** lacks permission to view external/received data. Observed exclusively on proxy/guardian logins — direct patient logins do not trigger this. Nothing the app developer can do; this is an Epic access control decision based on the user's relationship to the patient. |
+| 4101 | Informational | "Resource request returns no results." Normal — the patient simply has no data of that type. |
+| 59100 | Informational | "Content invalid against the specification." Usually a parameter warning (e.g., unknown param ignored). |
+
+### Observed Patterns (BCH, May 2026)
+
+**User-level (59205) — proxy vs direct login:**
+- Proxy blocked from: AllergyIntolerance, MedicationRequest, Immunization, MedicationDispense, Procedure, Goal — all "Outside Record" sub-resources
+- Direct login: no 59205 errors; gets full data including received/external records
+- Impact: Medications 15→131, Immunizations 6→74, MedicationDispense 0→77, Procedures 0→27, Allergies 2→6
+
+**App-level (59204) — affects both logins equally:**
+- Named denials: Condition (Genomics, Dental Finding, Infection, Medical History, Reason For Visit), Procedure (Patient-Reported Surgical History, External Radiotherapy Summary)
+- Unnamed gaps (4119 only, no 59204 diagnostic): Notes (13/228), Reports (28/92), Encounters (15/80), Vitals (52/93)
+
+### Root Cause of App-Level Gaps
+
+The app (`f2a91bd8`, "EHR Import - Confidential - All Inclusive") is missing several
+DocumentReference sub-resource endpoints despite being intended to cover all patient-facing
+R4 APIs. Confirmed via unfiltered query (59204 diagnostics):
+
+**DocumentReference — 10 denied sub-resources:**
+- Document Information
+- OASIS, HIS, Handoff, IRF-PAI, Minimum Data Set (facility-specific, likely irrelevant)
+- **External CDAs** — imported C-CDA documents from other providers
+- **Clinical References** — reference documents
+- **Radiology Results** — imaging reports
+- **Correspondences** — letters, messages
+
+These account for the bulk of the Notes gap (13/228 in EHI). The EHI's `HNO_INFO` table
+contains all note types; FHIR only returns the sub-resources the app is authorized for.
+
+**DiagnosticReport — no 59204 denials.** The apparent gap (28 vs 92 in EHI) is a comparison
+artifact: EHI's `ORDER_PROC` includes lab orders (75/92) which map to Observation in FHIR,
+not DiagnosticReport. Excluding labs, EHI has ~17 non-lab procedures vs 28 FHIR reports — 
+FHIR actually returns *more* (includes outside record results).
+
+**Encounter — no 59204 denials.** The gap (15 vs 80 in EHI) is a data model difference:
+EHI's `PAT_ENC` includes cancelled appointments, phone encounters, and message threads.
+FHIR Encounter only exposes completed clinical encounters.
+
+**Vitals — no 59204 denials.** The gap (52 vs 93 in EHI) is because EHI's `IP_FLWSHT_MEAS`
+includes screening questions, questionnaire responses, and calculated fields alongside true
+vital signs. FHIR `Observation?category=vital-signs` returns only actual vitals.
+
+**Important:** Once an app is marked "Ready for Production," its API selections are locked.
+Fixing the DocumentReference gap requires registering a new app with the missing endpoints.
+
 ## Adding a New Resource Type
 
 Add one dict to `ehr_import/resources.py`:

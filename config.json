@@ -11,9 +11,14 @@
             "non_production_client_id": "a1dc9efc-6058-4bea-9ba2-dea66ef1e7df",
             "auth_methods": ["jwt", "secret"]
         },
-        "confidential": {
+        "confidential_uscdi_v3": {
             "client_id": "f2a91bd8-0d59-4563-aa4a-7c1f2e97cc5f",
             "non_production_client_id": "8ef312df-59d2-4146-adcb-10ff3f643f62",
+            "auth_methods": ["jwt", "secret"]
+        },
+        "confidential": {
+            "client_id": "2a14380f-69df-4220-8bb1-6013f6ff6732",
+            "non_production_client_id": "6cd210a6-01ba-4422-87a7-0f42ca076b55",
             "auth_methods": ["jwt", "secret"]
         }
     },
