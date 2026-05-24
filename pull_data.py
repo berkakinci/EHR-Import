@@ -473,7 +473,11 @@ def pull_and_store(config: dict, base_url: str, patient_id: str, token: str,
         search_params["date"] = f"ge{since}"
 
     print(f"  Fetching {label}...")
-    entries, warnings = get_all_pages(base_url, fhir_type, token, search_params)
+    try:
+        entries, warnings = get_all_pages(base_url, fhir_type, token, search_params)
+    except requests.exceptions.HTTPError as e:
+        print(f"  ⚠ {label}: server returned {e.response.status_code} — skipping")
+        entries, warnings = [], []
     print(f"  → {len(entries)} {label}")
 
     handle_warnings(warnings, label, provider, patient_id, db)
