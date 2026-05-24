@@ -1,8 +1,9 @@
 """
-Pull labs and clinical notes from a FHIR R4 endpoint.
+Pull FHIR R4 resources from Epic-based EHRs into a local SQLite database.
 
-Fetches Observations (labs), DiagnosticReports, and DocumentReferences (notes),
-then stores them in a local SQLite database.
+Uses resource_config.py to determine what to fetch and how to store it.
+All resources go into a generic `resources` table; configured resource types
+also get materialized into convenience tables with curated columns.
 """
 
 import json
@@ -15,7 +16,12 @@ import requests
 from config import RAW_PULLS_DIR, DB_PATH
 from auth import load_tokens, load_all_tokens_for_provider, refresh_access_token
 from db import get_db, init_db
+from resource_config import RESOURCES
 
+
+# =============================================================================
+# FHIR HTTP helpers
+# =============================================================================
 
 def fhir_get(base_url: str, resource_path: str, token: str, params: dict = None) -> dict:
     """Make an authenticated GET request to a FHIR endpoint."""
@@ -25,10 +31,8 @@ def fhir_get(base_url: str, resource_path: str, token: str, params: dict = None)
         "Accept": "application/fhir+json",
     }
     resp = requests.get(url, headers=headers, params=params, timeout=30)
-
     if resp.status_code == 401:
         raise PermissionError("Token expired — refresh needed")
-
     resp.raise_for_status()
     return resp.json()
 
@@ -45,28 +49,21 @@ def get_all_pages(base_url: str, resource_path: str, token: str, params: dict = 
     while True:
         for entry in bundle.get("entry", []):
             resource = entry.get("resource", entry)
-            # Collect OperationOutcome warnings instead of silently dropping
             if resource.get("resourceType") == "OperationOutcome":
                 for issue in resource.get("issue", []):
                     warnings.append(issue)
                 continue
             entries.append(resource)
 
-        # Check for next page
         next_link = None
         for link in bundle.get("link", []):
             if link.get("relation") == "next":
                 next_link = link.get("url")
                 break
-
         if not next_link:
             break
 
-        # Fetch next page
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/fhir+json",
-        }
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/fhir+json"}
         resp = requests.get(next_link, headers=headers, timeout=30)
         resp.raise_for_status()
         bundle = resp.json()
@@ -74,897 +71,117 @@ def get_all_pages(base_url: str, resource_path: str, token: str, params: dict = 
     return entries, warnings
 
 
-def handle_warnings(warnings: list, resource_type: str, provider: str, patient_id: str, db=None):
-    """Print and store OperationOutcome warnings from a FHIR search.
+# =============================================================================
+# Field extraction engine
+# =============================================================================
 
-    All issues are stored unconditionally — this is a forensic log.
+def resolve_path(resource: dict, path: str):
+    """Resolve a dotted path with optional array indexing against a resource dict.
 
-    - Appends to pull_warnings (historical log, never deleted).
-    - Upserts data_status to reflect current completeness per resource_type.
+    Supports: "field.subfield", "field[0].subfield", "field.coding[0].code"
+    Returns None if any part of the path is missing.
     """
-    has_incomplete = False
-
-    for issue in warnings:
-        severity = issue.get("severity")
-        code = None
-        details = issue.get("details", {})
-        for coding in details.get("coding", []):
-            code = coding.get("code")
-            break
-        text = details.get("text", "")
-        diagnostics = issue.get("diagnostics", "")
-
-        if code == "4119":
-            has_incomplete = True
-            print(f"  ⚠ {resource_type}: INCOMPLETE — server indicates more data exists "
-                  f"but is not available to this app")
-        elif code == "4101":
-            pass  # "no results" is normal, don't spam
-        elif severity in ("error", "warning"):
-            display = text or diagnostics
-            if display:
-                print(f"  ⚠ {resource_type}: {display}")
-
-        # Append to historical log — store everything
-        if db:
-            try:
-                db.execute("""
-                    INSERT INTO pull_warnings
-                    (provider, patient_id, resource_type, severity, warning_code,
-                     warning_text, diagnostics, raw_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (provider, patient_id, resource_type, severity, code,
-                      text, diagnostics, json.dumps(issue)))
-                db.commit()
-            except Exception:
-                pass
-
-    # Update current status
-    if db:
-        try:
-            # Check previous state to detect transitions
-            prev = db.execute("""
-                SELECT complete FROM data_status
-                WHERE provider = ? AND patient_id = ? AND resource_type = ?
-            """, (provider, patient_id, resource_type)).fetchone()
-
-            was_incomplete = prev and prev[0] == 0
-
-            db.execute("""
-                INSERT INTO data_status (provider, patient_id, resource_type, complete, last_pulled_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(provider, patient_id, resource_type) DO UPDATE SET
-                    complete = excluded.complete,
-                    last_pulled_at = CURRENT_TIMESTAMP
-            """, (provider, patient_id, resource_type, 0 if has_incomplete else 1))
-
-            # Log the transition back to complete
-            if was_incomplete and not has_incomplete:
-                db.execute("""
-                    INSERT INTO pull_warnings
-                    (provider, patient_id, resource_type, warning_code, warning_text)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (provider, patient_id, resource_type, "resolved",
-                      "Previously incomplete data now returning successfully"))
-
-            db.commit()
-        except Exception:
-            pass
+    parts = path.strip().split(".")
+    current = resource
+    for part in parts:
+        if current is None:
+            return None
+        # Handle array index: "field[0]"
+        if "[" in part:
+            field, idx_str = part.split("[", 1)
+            idx = int(idx_str.rstrip("]"))
+            current = current.get(field) if isinstance(current, dict) else None
+            if isinstance(current, list) and len(current) > idx:
+                current = current[idx]
+            else:
+                return None
+        else:
+            current = current.get(part) if isinstance(current, dict) else None
+    return current
 
 
-def fetch_patient_demographics(base_url: str, patient_id: str, token: str) -> dict | None:
-    """Fetch the Patient resource to get name and demographics."""
-    try:
-        patient = fhir_get(base_url, f"Patient/{patient_id}", token)
-        return patient
-    except Exception as e:
-        print(f"  ⚠ Could not fetch Patient resource: {e}")
+def extract_field(resource: dict, spec: str) -> str | int | None:
+    """Extract a field value from a FHIR resource using the config spec syntax.
+
+    Supports fallback chains ("|"), special extractors ("@prefix:"), and plain paths.
+    """
+    # Handle fallback chains
+    if "|" in spec and not spec.startswith("@"):
+        for path in spec.split("|"):
+            val = resolve_path(resource, path.strip())
+            if val is not None:
+                return str(val) if not isinstance(val, (int, float, bool)) else val
         return None
 
-
-def store_patient(db, patient_resource: dict, provider: str, patient_id: str):
-    """Store or update patient demographics in the database."""
-    if not patient_resource:
-        return
-
-    # Extract name (use first "official" or first available name)
-    given_name = None
-    family_name = None
-    for name in patient_resource.get("name", []):
-        given_parts = name.get("given", [])
-        family = name.get("family")
-        if given_parts or family:
-            given_name = " ".join(given_parts) if given_parts else None
-            family_name = family
-            if name.get("use") == "official":
-                break  # Prefer official name
-
-    birth_date = patient_resource.get("birthDate")
-
-    cursor = db.cursor()
-    cursor.execute("""
-        INSERT INTO patients (patient_id, provider, given_name, family_name, birth_date, raw_json, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(patient_id) DO UPDATE SET
-            given_name = excluded.given_name,
-            family_name = excluded.family_name,
-            birth_date = excluded.birth_date,
-            raw_json = excluded.raw_json,
-            updated_at = CURRENT_TIMESTAMP
-    """, (
-        patient_id, provider, given_name, family_name, birth_date,
-        json.dumps(patient_resource),
-    ))
-    db.commit()
-    print(f"  Patient: {given_name or '?'} {family_name or '?'} (DOB: {birth_date or 'unknown'})")
-
-
-def pull_labs(base_url: str, patient_id: str, token: str, since: str = None) -> tuple[list, list]:
-    """Pull laboratory Observations."""
-    params = {
-        "patient": patient_id,
-        "category": "laboratory",
-        "_count": "100",
-    }
-    if since:
-        params["date"] = f"ge{since}"
-
-    print(f"  Fetching lab observations...")
-    labs, warnings = get_all_pages(base_url, "Observation", token, params)
-    print(f"  → {len(labs)} lab results (raw)")
-    return labs, warnings
-
-
-def pull_diagnostic_reports(base_url: str, patient_id: str, token: str, since: str = None) -> tuple[list, list]:
-    """Pull DiagnosticReports (lab panels, pathology, etc.)."""
-    params = {
-        "patient": patient_id,
-        "_count": "100",
-    }
-    if since:
-        params["date"] = f"ge{since}"
-
-    print(f"  Fetching diagnostic reports...")
-    reports, warnings = get_all_pages(base_url, "DiagnosticReport", token, params)
-    print(f"  → {len(reports)} diagnostic reports")
-    return reports, warnings
-
-
-def deduplicate_labs_and_reports(
-    labs: list, reports: list, base_url: str, token: str
-) -> tuple[list, list]:
-    """
-    Deduplicate labs vs diagnostic reports.
-
-    Epic sometimes returns the same observation in both the lab Observation list
-    and as a result reference inside a DiagnosticReport. This function:
-    1. Removes from labs any Observation whose code text contains "report" or "path"
-       (these are really diagnostic/pathology reports).
-    2. Fetches Observation references from DiagnosticReports that aren't already in
-       the lab set, and adds non-lab ones to the reports list.
-
-    Returns (cleaned_labs, enriched_reports) where enriched_reports includes
-    the text-based diagnostic observations separated out from labs.
-    """
-    # Build set of known lab observation IDs
-    lab_ids = set()
-    for obs in labs:
-        if obs.get("resourceType") == "Observation":
-            lab_ids.add(f"Observation/{obs['id']}")
-
-    # Find DiagnosticReport result references not already in our lab set
-    missing_refs = []
-    for report in reports:
-        if report.get("resourceType") != "DiagnosticReport":
-            continue
-        for result_ref in report.get("result", []):
-            ref = result_ref.get("reference", "")
-            if "/" in ref and ref not in lab_ids:
-                missing_refs.append(ref)
-
-    # Fetch missing observations from DiagnosticReports
-    diagnostic_obs = []
-    for ref in missing_refs:
-        try:
-            obs = fhir_get(base_url, ref, token)
-            # Skip if it's actually a lab (category code == "Lab")
-            is_lab = any(
-                coding.get("code") == "Lab"
-                for cat in obs.get("category", [])
-                for coding in cat.get("coding", [])
-            )
-            if not is_lab:
-                diagnostic_obs.append(obs)
-        except Exception:
-            continue
-
-    # Separate pathology/report observations out of the lab list
-    cleaned_labs = []
-    for obs in labs:
-        code_text = obs.get("code", {}).get("text", "").lower()
-        if "report" in code_text or "path" in code_text:
-            diagnostic_obs.append(obs)
-        elif code_text:
-            cleaned_labs.append(obs)
-        else:
-            cleaned_labs.append(obs)
-
-    print(f"  → Deduplication: {len(labs)} raw labs → {len(cleaned_labs)} labs + {len(diagnostic_obs)} diagnostic obs")
-    return cleaned_labs, diagnostic_obs
-
-
-def pull_notes(base_url: str, patient_id: str, token: str, since: str = None) -> tuple[list, list]:
-    """Pull DocumentReferences (clinical notes)."""
-    params = {
-        "patient": patient_id,
-        "category": "clinical-note",
-        "_count": "50",
-    }
-    if since:
-        params["date"] = f"ge{since}"
-
-    print(f"  Fetching clinical notes...")
-    notes, warnings = get_all_pages(base_url, "DocumentReference", token, params)
-    print(f"  → {len(notes)} clinical notes")
-    return notes, warnings
-
-
-def extract_note_content(doc_ref: dict, base_url: str, token: str) -> tuple[str | None, str, str | None, str | None]:
-    """
-    Extract text content from a DocumentReference.
-
-    Returns (content, fetch_status, fetch_detail, fetch_url) where:
-      - content: the text, or None if unavailable
-      - fetch_status: 'ok', 'fetch_failed', 'no_attachment', or 'empty'
-      - fetch_detail: human-readable explanation of what happened
-      - fetch_url: the resolved URL we attempted (for retry), or None
-    """
-    contents = doc_ref.get("content", [])
-    if not contents:
-        return None, "no_attachment", "DocumentReference has no content array", None
-
-    for content in contents:
-        attachment = content.get("attachment", {})
-
-        # Inline data (base64 encoded)
-        if "data" in attachment:
-            decoded = base64.b64decode(attachment["data"])
-            content_type = attachment.get("contentType", "")
-            if "text" in content_type or "html" in content_type:
-                text = decoded.decode("utf-8", errors="replace")
-                if text.strip():
-                    return text, "ok", None, None
-                else:
-                    return None, "empty", "Inline data decoded but was empty/whitespace", None
-            text = decoded.decode("utf-8", errors="replace")
-            if text.strip():
-                return text, "ok", None, None
-            else:
-                return None, "empty", "Inline data decoded but was empty/whitespace", None
-
-        # URL reference — fetch it
-        if "url" in attachment:
-            fetch_url = attachment["url"]
-            # Resolve relative URLs against the FHIR base
-            if not fetch_url.startswith("http"):
-                fetch_url = f"{base_url.rstrip('/')}/{fetch_url}"
-
-            try:
-                headers = {
-                    "Authorization": f"Bearer {token}",
-                    "Accept": attachment.get("contentType", "text/plain"),
-                }
-                resp = requests.get(fetch_url, headers=headers, timeout=30)
-                if resp.status_code == 200 and resp.text.strip():
-                    return resp.text, "ok", None, None
-                elif resp.status_code == 200:
-                    return None, "empty", "Binary fetched OK but body was empty", fetch_url
-                else:
-                    # Try to extract OperationOutcome diagnostic from error response
-                    error_body = ""
-                    try:
-                        outcome = resp.json()
-                        issues = outcome.get("issue", [])
-                        if issues:
-                            error_body = "; ".join(
-                                i.get("diagnostics", i.get("details", {}).get("text", ""))
-                                for i in issues if i.get("diagnostics") or i.get("details")
-                            )
-                    except (ValueError, AttributeError):
-                        body_text = resp.text.strip()
-                        if body_text:
-                            error_body = body_text[:200]
-
-                    detail = f"HTTP {resp.status_code}"
-                    if error_body:
-                        detail += f" — {error_body}"
-                    print(f"    ⚠ Note content fetch failed: {detail} ({attachment['url']})")
-                    return None, "fetch_failed", detail, fetch_url
-            except requests.RequestException as e:
-                detail = f"Request error: {e}"
-                print(f"    ⚠ Note content fetch failed: {detail} ({attachment['url']})")
-                return None, "fetch_failed", detail, fetch_url
-
-    return None, "no_attachment", "Attachments present but no data or url fields found", None
-
-
-def store_labs(db, labs: list, provider: str, patient_id: str):
-    """Store lab observations in the database."""
-    cursor = db.cursor()
-    stored = 0
-
-    for lab in labs:
-        fhir_id = lab.get("id", "")
-        code = lab.get("code", {}).get("text") or _get_coding_display(lab.get("code", {}))
-        value = _extract_value(lab)
-        unit = _extract_unit(lab)
-        ref_range = _extract_reference_range(lab)
-        status = lab.get("status", "")
-        effective_date = lab.get("effectiveDateTime") or _get_period_start(lab.get("effectivePeriod"))
-
-        cursor.execute("""
-            INSERT OR REPLACE INTO labs
-            (fhir_id, patient_id, provider, code_display, value, unit, reference_range, status, effective_date, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            fhir_id, patient_id, provider, code, value, unit, ref_range, status,
-            effective_date, json.dumps(lab),
-        ))
-        stored += 1
-
-    db.commit()
-    print(f"  → Stored {stored} lab results")
-
-
-def store_diagnostic_reports(db, reports: list, provider: str, patient_id: str, base_url: str, token: str):
-    """Store DiagnosticReport resources in the database, fetching presentedForm content."""
-    cursor = db.cursor()
-    stored = 0
-    fetch_failures = 0
-
-    for report in reports:
-        if report.get("resourceType") != "DiagnosticReport":
-            continue
-
-        fhir_id = report.get("id", "")
-        code = report.get("code", {}).get("text") or _get_coding_display(report.get("code", {}))
-        status = report.get("status", "")
-        effective_date = report.get("effectiveDateTime") or _get_period_start(report.get("effectivePeriod"))
-
-        # Collect result observation references
-        result_refs = [ref.get("reference", "") for ref in report.get("result", [])]
-        result_obs_ids = json.dumps(result_refs) if result_refs else None
-
-        # Fetch presentedForm content (similar to note attachments)
-        content_text, fetch_status, fetch_detail, fetch_url = _extract_report_content(
-            report, base_url, token
-        )
-
-        if fetch_status == "fetch_failed":
-            fetch_failures += 1
-
-        cursor.execute("""
-            INSERT OR REPLACE INTO diagnostic_reports
-            (fhir_id, patient_id, provider, code_display, status, effective_date,
-             result_observation_ids, content_text,
-             content_fetch_status, content_fetch_detail, content_fetch_url, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            fhir_id, patient_id, provider, code, status, effective_date,
-            result_obs_ids, content_text,
-            fetch_status, fetch_detail, fetch_url, json.dumps(report),
-        ))
-        stored += 1
-
-    db.commit()
-    print(f"  → Stored {stored} diagnostic reports", end="")
-    if fetch_failures:
-        print(f" ({fetch_failures} with failed content fetch)")
-    else:
-        print()
-
-
-def _extract_report_content(report: dict, base_url: str, token: str) -> tuple[str | None, str, str | None, str | None]:
-    """
-    Extract presentedForm content from a DiagnosticReport.
-
-    Returns (content, fetch_status, fetch_detail, fetch_url).
-    """
-    presented_forms = report.get("presentedForm", [])
-    if not presented_forms:
-        return None, "no_attachment", None, None
-
-    for attachment in presented_forms:
-        # Inline data
-        if "data" in attachment:
-            decoded = base64.b64decode(attachment["data"])
-            text = decoded.decode("utf-8", errors="replace")
-            if text.strip():
-                return text, "ok", None, None
-            else:
-                return None, "empty", "Inline data decoded but was empty/whitespace", None
-
-        # URL reference
-        if "url" in attachment:
-            fetch_url = attachment["url"]
-            if not fetch_url.startswith("http"):
-                fetch_url = f"{base_url.rstrip('/')}/{fetch_url}"
-
-            try:
-                headers = {
-                    "Authorization": f"Bearer {token}",
-                    "Accept": attachment.get("contentType", "text/plain"),
-                }
-                resp = requests.get(fetch_url, headers=headers, timeout=30)
-                if resp.status_code == 200 and resp.text.strip():
-                    return resp.text, "ok", None, None
-                elif resp.status_code == 200:
-                    return None, "empty", "Binary fetched OK but body was empty", fetch_url
-                else:
-                    error_body = ""
-                    try:
-                        outcome = resp.json()
-                        issues = outcome.get("issue", [])
-                        if issues:
-                            error_body = "; ".join(
-                                i.get("diagnostics", i.get("details", {}).get("text", ""))
-                                for i in issues if i.get("diagnostics") or i.get("details")
-                            )
-                    except (ValueError, AttributeError):
-                        body_text = resp.text.strip()
-                        if body_text:
-                            error_body = body_text[:200]
-
-                    detail = f"HTTP {resp.status_code}"
-                    if error_body:
-                        detail += f" — {error_body}"
-                    print(f"    ⚠ Report content fetch failed: {detail} ({attachment['url']})")
-                    return None, "fetch_failed", detail, fetch_url
-            except requests.RequestException as e:
-                detail = f"Request error: {e}"
-                print(f"    ⚠ Report content fetch failed: {detail} ({attachment['url']})")
-                return None, "fetch_failed", detail, fetch_url
-
-    return None, "no_attachment", "presentedForm present but no data or url fields found", None
-
-
-def store_notes(db, notes: list, provider: str, patient_id: str, base_url: str, token: str):
-    """Store clinical notes in the database."""
-    cursor = db.cursor()
-    stored = 0
-    fetch_failures = 0
-
-    for note in notes:
-        fhir_id = note.get("id", "")
-        doc_type = _get_coding_display(note.get("type", {}))
-        date = note.get("date") or note.get("context", {}).get("period", {}).get("start")
-        status = note.get("status", "")
-        author = _extract_author(note)
-
-        # Extract the actual note text (with status tracking)
-        content_text, fetch_status, fetch_detail, fetch_url = extract_note_content(note, base_url, token)
-
-        if fetch_status == "fetch_failed":
-            fetch_failures += 1
-
-        cursor.execute("""
-            INSERT OR REPLACE INTO notes
-            (fhir_id, patient_id, provider, doc_type, author, date, status, content_text,
-             content_fetch_status, content_fetch_detail, content_fetch_url, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            fhir_id, patient_id, provider, doc_type, author, date, status,
-            content_text, fetch_status, fetch_detail, fetch_url, json.dumps(note),
-        ))
-        stored += 1
-
-    db.commit()
-    print(f"  → Stored {stored} clinical notes", end="")
-    if fetch_failures:
-        print(f" ({fetch_failures} with failed content fetch)")
-    else:
-        print()
-
-
-def pull_conditions(base_url: str, patient_id: str, token: str) -> tuple[list, list]:
-    """Pull Condition resources (diagnoses, problems)."""
-    params = {
-        "patient": patient_id,
-        "_count": "100",
-    }
-
-    print(f"  Fetching conditions...")
-    conditions, warnings = get_all_pages(base_url, "Condition", token, params)
-    print(f"  → {len(conditions)} conditions")
-    return conditions, warnings
-
-
-def store_conditions(db, conditions: list, provider: str, patient_id: str):
-    """Store conditions in the database."""
-    cursor = db.cursor()
-    stored = 0
-
-    for cond in conditions:
-        fhir_id = cond.get("id", "")
-        code = cond.get("code", {}).get("text") or _get_coding_display(cond.get("code", {}))
-
-        clinical_status_codings = cond.get("clinicalStatus", {}).get("coding", [])
-        clinical_status = clinical_status_codings[0].get("code") if clinical_status_codings else None
-
-        verification_codings = cond.get("verificationStatus", {}).get("coding", [])
-        verification_status = verification_codings[0].get("code") if verification_codings else None
-
-        category_list = cond.get("category", [])
-        category = _get_coding_display(category_list[0]) if category_list else None
-
-        onset_date = (
-            cond.get("onsetDateTime")
-            or _get_period_start(cond.get("onsetPeriod"))
-        )
-        abatement_date = (
-            cond.get("abatementDateTime")
-            or _get_period_start(cond.get("abatementPeriod"))
-        )
-
-        cursor.execute("""
-            INSERT OR REPLACE INTO conditions
-            (fhir_id, patient_id, provider, code_display, clinical_status, verification_status,
-             category, onset_date, abatement_date, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            fhir_id, patient_id, provider, code, clinical_status, verification_status,
-            category, onset_date, abatement_date, json.dumps(cond),
-        ))
-        stored += 1
-
-    db.commit()
-    print(f"  → Stored {stored} conditions")
-
-
-def pull_vitals(base_url: str, patient_id: str, token: str, since: str = None) -> tuple[list, list]:
-    """Pull vital signs Observations."""
-    params = {
-        "patient": patient_id,
-        "category": "vital-signs",
-        "_count": "100",
-    }
-    if since:
-        params["date"] = f"ge{since}"
-
-    print(f"  Fetching vital signs...")
-    vitals, warnings = get_all_pages(base_url, "Observation", token, params)
-    print(f"  → {len(vitals)} vital signs")
-    return vitals, warnings
-
-
-def store_vitals(db, vitals: list, provider: str, patient_id: str):
-    """Store vital sign observations in the database."""
-    cursor = db.cursor()
-    stored = 0
-
-    for obs in vitals:
-        fhir_id = obs.get("id", "")
-        code = obs.get("code", {}).get("text") or _get_coding_display(obs.get("code", {}))
-        value = _extract_value(obs)
-        unit = _extract_unit(obs)
-        status = obs.get("status", "")
-        effective_date = obs.get("effectiveDateTime") or _get_period_start(obs.get("effectivePeriod"))
-
-        cursor.execute("""
-            INSERT OR REPLACE INTO vitals
-            (fhir_id, patient_id, provider, code_display, value, unit, status, effective_date, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            fhir_id, patient_id, provider, code, value, unit, status,
-            effective_date, json.dumps(obs),
-        ))
-        stored += 1
-
-    db.commit()
-    print(f"  → Stored {stored} vital signs")
-
-
-def pull_allergies(base_url: str, patient_id: str, token: str) -> tuple[list, list]:
-    """Pull AllergyIntolerance resources."""
-    params = {
-        "patient": patient_id,
-        "_count": "100",
-    }
-
-    print(f"  Fetching allergies...")
-    allergies, warnings = get_all_pages(base_url, "AllergyIntolerance", token, params)
-    print(f"  → {len(allergies)} allergies")
-    return allergies, warnings
-
-
-def store_allergies(db, allergies: list, provider: str, patient_id: str):
-    """Store allergy/intolerance records in the database.
-
-    Deduplicates strictly on case and whitespace only — "NICKEL", "nickel",
-    and " Nickel " are the same entry; "ADHESIVE" and "WOUND DRESSING ADHESIVE"
-    are not.
-    """
-    cursor = db.cursor()
-    stored = 0
-    skipped = 0
-
-    # Track seen normalized names for this patient+provider
-    seen = set()
-    existing = cursor.execute(
-        "SELECT code_display FROM allergies WHERE patient_id=? AND provider=?",
-        (patient_id, provider),
-    ).fetchall()
-    for (name,) in existing:
-        if name:
-            seen.add(name.strip().lower())
-
-    for allergy in allergies:
-        fhir_id = allergy.get("id", "")
-        code = allergy.get("code", {}).get("text") or _get_coding_display(allergy.get("code", {}))
-
-        # Strict dedup: collapse case and surrounding whitespace only
-        normalized = code.strip().lower() if code else ""
-        if normalized in seen:
-            skipped += 1
-            continue
-        seen.add(normalized)
-
-        clinical_status_codings = allergy.get("clinicalStatus", {}).get("coding", [])
-        clinical_status = clinical_status_codings[0].get("code") if clinical_status_codings else None
-
-        verification_codings = allergy.get("verificationStatus", {}).get("coding", [])
-        verification_status = verification_codings[0].get("code") if verification_codings else None
-
-        allergy_type = allergy.get("type")
-        category_list = allergy.get("category", [])
-        category = ", ".join(category_list) if category_list else None
-
-        criticality = allergy.get("criticality")
-        onset_date = allergy.get("onsetDateTime") or _get_period_start(allergy.get("onsetPeriod"))
-        recorded_date = allergy.get("recordedDate")
-
-        # Extract reactions summary
-        reactions = allergy.get("reaction", [])
-        reaction_text = None
-        if reactions:
-            parts = []
-            for r in reactions:
-                manifestations = [
-                    m.get("text") or _get_coding_display(m)
-                    for m in r.get("manifestation", [])
-                ]
-                if manifestations:
-                    parts.extend(manifestations)
-            reaction_text = "; ".join(parts) if parts else None
-
-        cursor.execute("""
-            INSERT OR REPLACE INTO allergies
-            (fhir_id, patient_id, provider, code_display, clinical_status, verification_status,
-             type, category, criticality, onset_date, recorded_date, reaction_text, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            fhir_id, patient_id, provider, code, clinical_status, verification_status,
-            allergy_type, category, criticality, onset_date, recorded_date,
-            reaction_text, json.dumps(allergy),
-        ))
-        stored += 1
-
-    db.commit()
-    print(f"  → Stored {stored} allergies" + (f" (skipped {skipped} case-duplicates)" if skipped else ""))
-
-
-def pull_encounters(base_url: str, patient_id: str, token: str, since: str = None) -> tuple[list, list]:
-    """Pull Encounter resources."""
-    params = {
-        "patient": patient_id,
-        "_count": "100",
-    }
-    if since:
-        params["date"] = f"ge{since}"
-
-    print(f"  Fetching encounters...")
-    encounters, warnings = get_all_pages(base_url, "Encounter", token, params)
-    print(f"  → {len(encounters)} encounters")
-    return encounters, warnings
-
-
-def store_encounters(db, encounters: list, provider: str, patient_id: str):
-    """Store encounter records in the database."""
-    cursor = db.cursor()
-    stored = 0
-
-    for enc in encounters:
-        fhir_id = enc.get("id", "")
-
-        type_list = enc.get("type", [])
-        encounter_type = _get_coding_display(type_list[0]) if type_list else None
-
-        status = enc.get("status", "")
-        enc_class = enc.get("class", {}).get("display") or enc.get("class", {}).get("code")
-
-        period = enc.get("period", {})
-        start_date = period.get("start")
-        end_date = period.get("end")
-
-        reason_list = enc.get("reasonCode", [])
-        reason = _get_coding_display(reason_list[0]) if reason_list else None
-
-        # Extract primary participant/provider
-        participants = enc.get("participant", [])
-        participant_name = None
-        for p in participants:
-            individual = p.get("individual", {})
-            if individual.get("display"):
-                participant_name = individual["display"]
-                break
-
-        cursor.execute("""
-            INSERT OR REPLACE INTO encounters
-            (fhir_id, patient_id, provider, encounter_type, status, class, start_date, end_date,
-             reason, participant_name, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            fhir_id, patient_id, provider, encounter_type, status, enc_class,
-            start_date, end_date, reason, participant_name, json.dumps(enc),
-        ))
-        stored += 1
-
-    db.commit()
-    print(f"  → Stored {stored} encounters")
-
-
-def pull_medications(base_url: str, patient_id: str, token: str, since: str = None) -> tuple[list, list]:
-    """Pull MedicationRequest resources."""
-    params = {
-        "patient": patient_id,
-        "_count": "100",
-    }
-    if since:
-        params["date"] = f"ge{since}"
-
-    print(f"  Fetching medication requests...")
-    meds, warnings = get_all_pages(base_url, "MedicationRequest", token, params)
-    print(f"  → {len(meds)} medication requests")
-    return meds, warnings
-
-
-def store_medications(db, medications: list, provider: str, patient_id: str):
-    """Store medication request records in the database."""
-    cursor = db.cursor()
-    stored = 0
-
-    for med in medications:
-        fhir_id = med.get("id", "")
-
-        # Medication name from medicationCodeableConcept or medicationReference
-        med_concept = med.get("medicationCodeableConcept", {})
-        medication_name = med_concept.get("text") or _get_coding_display(med_concept)
-        if medication_name == "Unknown" and med.get("medicationReference"):
-            medication_name = med["medicationReference"].get("display", "Unknown")
-
-        status = med.get("status", "")
-        intent = med.get("intent", "")
-        authored_on = med.get("authoredOn")
-
-        # reportedBoolean: True means outside/patient-reported (not ordered here)
-        reported_val = med.get("reportedBoolean")
-        reported = 1 if reported_val is True else (0 if reported_val is False else None)
-
-        # Dosage instructions
-        dosage_list = med.get("dosageInstruction", [])
-        dosage_text = None
-        if dosage_list:
-            texts = [d.get("text", "") for d in dosage_list if d.get("text")]
-            dosage_text = "; ".join(texts) if texts else None
-
-        # Requester (prescriber)
-        requester = med.get("requester", {}).get("display")
-
-        cursor.execute("""
-            INSERT OR REPLACE INTO medications
-            (fhir_id, patient_id, provider, medication_name, status, intent, reported,
-             authored_on, dosage_text, requester, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            fhir_id, patient_id, provider, medication_name, status, intent, reported,
-            authored_on, dosage_text, requester, json.dumps(med),
-        ))
-        stored += 1
-
-    db.commit()
-    print(f"  → Stored {stored} medication requests")
-
-
-def pull_social_history(base_url: str, patient_id: str, token: str) -> tuple[list, list]:
-    """Pull social history Observations."""
-    params = {
-        "patient": patient_id,
-        "category": "social-history",
-        "_count": "100",
-    }
-
-    print(f"  Fetching social history...")
-    obs, warnings = get_all_pages(base_url, "Observation", token, params)
-    print(f"  → {len(obs)} social history observations")
-    return obs, warnings
-
-
-def store_social_history(db, observations: list, provider: str, patient_id: str):
-    """Store social history observations in the database."""
-    cursor = db.cursor()
-    stored = 0
-
-    for obs in observations:
-        fhir_id = obs.get("id", "")
-        code = obs.get("code", {}).get("text") or _get_coding_display(obs.get("code", {}))
-        value = _extract_value(obs)
-        status = obs.get("status", "")
-        effective_date = obs.get("effectiveDateTime") or _get_period_start(obs.get("effectivePeriod"))
-
-        cursor.execute("""
-            INSERT OR REPLACE INTO social_history
-            (fhir_id, patient_id, provider, code_display, value, status, effective_date, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            fhir_id, patient_id, provider, code, value, status,
-            effective_date, json.dumps(obs),
-        ))
-        stored += 1
-
-    db.commit()
-    print(f"  → Stored {stored} social history observations")
-
-
-def pull_assessments(base_url: str, patient_id: str, token: str, since: str = None) -> tuple[list, list]:
-    """Pull assessment/survey Observations."""
-    params = {
-        "patient": patient_id,
-        "category": "survey",
-        "_count": "100",
-    }
-    if since:
-        params["date"] = f"ge{since}"
-
-    print(f"  Fetching assessments...")
-    obs, warnings = get_all_pages(base_url, "Observation", token, params)
-    print(f"  → {len(obs)} assessments")
-    return obs, warnings
-
-
-def store_assessments(db, observations: list, provider: str, patient_id: str):
-    """Store assessment/survey observations in the database."""
-    cursor = db.cursor()
-    stored = 0
-
-    for obs in observations:
-        fhir_id = obs.get("id", "")
-        code = obs.get("code", {}).get("text") or _get_coding_display(obs.get("code", {}))
-        value = _extract_value(obs)
-        status = obs.get("status", "")
-        effective_date = obs.get("effectiveDateTime") or _get_period_start(obs.get("effectivePeriod"))
-
-        cursor.execute("""
-            INSERT OR REPLACE INTO assessments
-            (fhir_id, patient_id, provider, code_display, value, status, effective_date, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            fhir_id, patient_id, provider, code, value, status,
-            effective_date, json.dumps(obs),
-        ))
-        stored += 1
-
-    db.commit()
-    print(f"  → Stored {stored} assessments")
-
-
-# --- Helper functions ---
-
-def _get_coding_display(codeable_concept: dict) -> str:
-    """Get display text from a CodeableConcept."""
+    # Special extractors
+    if spec.startswith("@coding_display:"):
+        field_path = spec[len("@coding_display:"):]
+        obj = resolve_path(resource, field_path) if field_path else resource
+        return _get_coding_display(obj) if obj else None
+
+    if spec == "@value:":
+        return _extract_value(resource)
+
+    if spec == "@unit:":
+        return _extract_unit(resource)
+
+    if spec == "@ref_range:":
+        return _extract_reference_range(resource)
+
+    if spec == "@author:":
+        return _extract_author(resource)
+
+    if spec == "@reactions:":
+        return _extract_reactions(resource)
+
+    if spec == "@dosage:":
+        return _extract_dosage(resource)
+
+    if spec == "@med_name:":
+        return _extract_med_name(resource)
+
+    if spec.startswith("@join:"):
+        field_path = spec[len("@join:"):]
+        val = resolve_path(resource, field_path)
+        if isinstance(val, list):
+            return ", ".join(str(v) for v in val if v)
+        return str(val) if val else None
+
+    # Plain path
+    val = resolve_path(resource, spec)
+    if isinstance(val, bool):
+        return 1 if val else 0
+    if val is not None:
+        return str(val)
+    return None
+
+
+def extract_effective_date(resource: dict, date_paths: list[str] | None) -> str | None:
+    """Extract the best effective date from a resource using priority list."""
+    if not date_paths:
+        return None
+    for path in date_paths:
+        val = resolve_path(resource, path)
+        if val:
+            return str(val)
+    return None
+
+
+# =============================================================================
+# Special extractors (complex logic that can't be expressed as paths)
+# =============================================================================
+
+def _get_coding_display(codeable_concept) -> str | None:
+    """Get display text from a CodeableConcept or similar."""
+    if not codeable_concept or not isinstance(codeable_concept, dict):
+        return None
+    text = codeable_concept.get("text")
+    if text:
+        return text
     for coding in codeable_concept.get("coding", []):
         if coding.get("display"):
             return coding["display"]
-    return codeable_concept.get("text", "Unknown")
+    return None
 
 
 def _extract_value(observation: dict) -> str | None:
@@ -976,7 +193,6 @@ def _extract_value(observation: dict) -> str | None:
     if "valueCodeableConcept" in observation:
         return _get_coding_display(observation["valueCodeableConcept"])
     if "component" in observation:
-        # Multi-component (e.g., blood pressure)
         parts = []
         for comp in observation["component"]:
             name = _get_coding_display(comp.get("code", {}))
@@ -1003,27 +219,392 @@ def _extract_reference_range(observation: dict) -> str | None:
     high = r.get("high", {}).get("value")
     if low is not None and high is not None:
         return f"{low}-{high}"
-    if r.get("text"):
-        return r["text"]
-    return None
-
-
-def _get_period_start(period: dict | None) -> str | None:
-    if period:
-        return period.get("start")
-    return None
+    return r.get("text")
 
 
 def _extract_author(doc_ref: dict) -> str | None:
     """Extract author name from DocumentReference."""
     authors = doc_ref.get("author", [])
-    if authors:
-        return authors[0].get("display")
-    return None
+    return authors[0].get("display") if authors else None
 
+
+def _extract_reactions(allergy: dict) -> str | None:
+    """Extract reactions summary from AllergyIntolerance."""
+    reactions = allergy.get("reaction", [])
+    if not reactions:
+        return None
+    parts = []
+    for r in reactions:
+        for m in r.get("manifestation", []):
+            text = m.get("text") or _get_coding_display(m)
+            if text:
+                parts.append(text)
+    return "; ".join(parts) if parts else None
+
+
+def _extract_dosage(med: dict) -> str | None:
+    """Extract dosage text from MedicationRequest."""
+    dosage_list = med.get("dosageInstruction", [])
+    if not dosage_list:
+        return None
+    texts = [d.get("text", "") for d in dosage_list if d.get("text")]
+    return "; ".join(texts) if texts else None
+
+
+def _extract_med_name(med: dict) -> str | None:
+    """Extract medication name from MedicationRequest or MedicationDispense."""
+    concept = med.get("medicationCodeableConcept", {})
+    name = concept.get("text") or _get_coding_display(concept)
+    if not name and med.get("medicationReference"):
+        name = med["medicationReference"].get("display")
+    return name
+
+
+# =============================================================================
+# Content fetching (for DocumentReference, DiagnosticReport)
+# =============================================================================
+
+def fetch_attachment_content(resource: dict, content_field: str, base_url: str, token: str
+                             ) -> tuple[str | None, str, str | None, str | None]:
+    """Fetch text content from a resource's attachment field.
+
+    content_field is either "content" (DocumentReference) or "presentedForm" (DiagnosticReport).
+
+    Returns (content_text, fetch_status, fetch_detail, fetch_url).
+    """
+    if content_field == "content":
+        # DocumentReference: content[].attachment
+        items = resource.get("content", [])
+        attachments = [item.get("attachment", {}) for item in items]
+    elif content_field == "presentedForm":
+        # DiagnosticReport: presentedForm[]
+        attachments = resource.get("presentedForm", [])
+    else:
+        return None, "no_attachment", None, None
+
+    if not attachments:
+        return None, "no_attachment", None, None
+
+    for attachment in attachments:
+        # Inline base64 data
+        if "data" in attachment:
+            decoded = base64.b64decode(attachment["data"])
+            text = decoded.decode("utf-8", errors="replace")
+            if text.strip():
+                return text, "ok", None, None
+            else:
+                return None, "empty", "Inline data decoded but was empty/whitespace", None
+
+        # URL reference — fetch Binary
+        if "url" in attachment:
+            fetch_url = attachment["url"]
+            if not fetch_url.startswith("http"):
+                fetch_url = f"{base_url.rstrip('/')}/{fetch_url}"
+            try:
+                headers = {
+                    "Authorization": f"Bearer {token}",
+                    "Accept": attachment.get("contentType", "text/plain"),
+                }
+                resp = requests.get(fetch_url, headers=headers, timeout=30)
+                if resp.status_code == 200 and resp.text.strip():
+                    return resp.text, "ok", None, None
+                elif resp.status_code == 200:
+                    return None, "empty", "Binary fetched OK but body was empty", fetch_url
+                else:
+                    error_body = _extract_error_body(resp)
+                    detail = f"HTTP {resp.status_code}"
+                    if error_body:
+                        detail += f" — {error_body}"
+                    return None, "fetch_failed", detail, fetch_url
+            except requests.RequestException as e:
+                return None, "fetch_failed", f"Request error: {e}", fetch_url
+
+    return None, "no_attachment", "Attachments present but no data or url fields found", None
+
+
+def _extract_error_body(resp) -> str:
+    """Try to extract a useful error message from a failed response."""
+    try:
+        outcome = resp.json()
+        issues = outcome.get("issue", [])
+        if issues:
+            return "; ".join(
+                i.get("diagnostics", i.get("details", {}).get("text", ""))
+                for i in issues if i.get("diagnostics") or i.get("details")
+            )
+    except (ValueError, AttributeError):
+        pass
+    body = resp.text.strip()
+    return body[:200] if body else ""
+
+
+# =============================================================================
+# Deduplication hooks
+# =============================================================================
+
+def should_skip_dedup(resource: dict, config: dict, seen: set, db, patient_id: str, provider: str, table: str) -> bool:
+    """Check if a resource should be skipped based on dedup config.
+
+    Returns True if the resource is a duplicate and should be skipped.
+    """
+    dedup = config.get("dedup")
+    if not dedup:
+        return False
+
+    if dedup.startswith("case_insensitive:"):
+        field_name = dedup.split(":", 1)[1]
+        col_spec = config["columns"].get(field_name)
+        if not col_spec:
+            return False
+        val = extract_field(resource, col_spec)
+        normalized = val.strip().lower() if val else ""
+        if normalized in seen:
+            return True
+        seen.add(normalized)
+
+    return False
+
+
+def load_existing_dedup_keys(config: dict, db, patient_id: str, provider: str, table: str) -> set:
+    """Load existing dedup keys from the database for incremental dedup."""
+    dedup = config.get("dedup")
+    if not dedup:
+        return set()
+
+    if dedup.startswith("case_insensitive:"):
+        field_name = dedup.split(":", 1)[1]
+        try:
+            rows = db.execute(
+                f'SELECT {field_name} FROM "{table}" WHERE patient_id=? AND provider=?',
+                (patient_id, provider),
+            ).fetchall()
+            return {row[0].strip().lower() for row in rows if row[0]}
+        except Exception:
+            return set()
+
+    return set()
+
+
+# =============================================================================
+# Warning handling
+# =============================================================================
+
+def handle_warnings(warnings: list, label: str, provider: str, patient_id: str, db=None):
+    """Print and store OperationOutcome warnings from a FHIR search."""
+    has_incomplete = False
+
+    for issue in warnings:
+        severity = issue.get("severity")
+        code = None
+        details = issue.get("details", {})
+        for coding in details.get("coding", []):
+            code = coding.get("code")
+            break
+        text = details.get("text", "")
+        diagnostics = issue.get("diagnostics", "")
+
+        if code == "4119":
+            has_incomplete = True
+            print(f"  ⚠ {label}: INCOMPLETE — server withholds data")
+        elif code == "4101":
+            pass
+        elif severity in ("error", "warning"):
+            display = text or diagnostics
+            if display:
+                print(f"  ⚠ {label}: {display}")
+
+        if db:
+            try:
+                db.execute("""
+                    INSERT INTO pull_warnings
+                    (provider, patient_id, resource_type, severity, warning_code,
+                     warning_text, diagnostics, raw_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (provider, patient_id, label, severity, code,
+                      text, diagnostics, json.dumps(issue)))
+                db.commit()
+            except Exception:
+                pass
+
+    if db:
+        try:
+            prev = db.execute("""
+                SELECT complete FROM data_status
+                WHERE provider = ? AND patient_id = ? AND resource_type = ?
+            """, (provider, patient_id, label)).fetchone()
+            was_incomplete = prev and prev[0] == 0
+
+            db.execute("""
+                INSERT INTO data_status (provider, patient_id, resource_type, complete, last_pulled_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(provider, patient_id, resource_type) DO UPDATE SET
+                    complete = excluded.complete, last_pulled_at = CURRENT_TIMESTAMP
+            """, (provider, patient_id, label, 0 if has_incomplete else 1))
+
+            if was_incomplete and not has_incomplete:
+                db.execute("""
+                    INSERT INTO pull_warnings
+                    (provider, patient_id, resource_type, warning_code, warning_text)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (provider, patient_id, label, "resolved",
+                      "Previously incomplete data now returning successfully"))
+            db.commit()
+        except Exception:
+            pass
+
+
+# =============================================================================
+# Generic pull + store
+# =============================================================================
+
+def pull_and_store(config: dict, base_url: str, patient_id: str, token: str,
+                   provider: str, db, since: str = None) -> tuple[list, list]:
+    """Pull a single resource type and store into generic + convenience tables.
+
+    Returns (entries, warnings) for raw data archival.
+    """
+    fhir_type = config["fhir_type"]
+    label = config["label"]
+    table = config.get("table")
+    search_params = dict(config.get("search_params", {}))
+    search_params["patient"] = patient_id
+    search_params["_count"] = "100"
+    if since and "date" not in search_params:
+        search_params["date"] = f"ge{since}"
+
+    print(f"  Fetching {label}...")
+    entries, warnings = get_all_pages(base_url, fhir_type, token, search_params)
+    print(f"  → {len(entries)} {label}")
+
+    handle_warnings(warnings, label, provider, patient_id, db)
+
+    # --- Store into generic resources table ---
+    date_paths = config.get("effective_date")
+    for resource in entries:
+        fhir_id = resource.get("id", "")
+        eff_date = extract_effective_date(resource, date_paths)
+        db.execute("""
+            INSERT OR REPLACE INTO resources
+            (fhir_id, resource_type, label, patient_id, provider, effective_date, reinterpreted, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (fhir_id, fhir_type, label, patient_id, provider, eff_date,
+              1 if table else 0, json.dumps(resource)))
+    db.commit()
+
+    # --- Store into convenience table (if configured) ---
+    if table:
+        _store_convenience(config, entries, provider, patient_id, base_url, token, db)
+
+    return entries, warnings
+
+
+def _store_convenience(config: dict, entries: list, provider: str, patient_id: str,
+                       base_url: str, token: str, db):
+    """Store resources into the convenience table with curated columns."""
+    table = config["table"]
+    columns = config.get("columns", {})
+    content_field = config.get("content_fetch")
+    date_paths = config.get("effective_date")
+
+    # Dedup setup
+    seen = load_existing_dedup_keys(config, db, patient_id, provider, table)
+
+    stored = 0
+    skipped = 0
+    fetch_failures = 0
+
+    for resource in entries:
+        # Dedup check
+        if should_skip_dedup(resource, config, seen, db, patient_id, provider, table):
+            skipped += 1
+            continue
+
+        fhir_id = resource.get("id", "")
+        eff_date = extract_effective_date(resource, date_paths)
+
+        # Extract curated columns
+        col_names = ["fhir_id", "patient_id", "provider"]
+        col_values = [fhir_id, patient_id, provider]
+
+        for col_name, spec in columns.items():
+            col_names.append(col_name)
+            col_values.append(extract_field(resource, spec))
+
+        # Content fetch (if applicable)
+        if content_field:
+            content_text, fetch_status, fetch_detail, fetch_url = fetch_attachment_content(
+                resource, content_field, base_url, token
+            )
+            col_names.extend(["content_text", "content_fetch_status", "content_fetch_detail", "content_fetch_url"])
+            col_values.extend([content_text, fetch_status, fetch_detail, fetch_url])
+            if fetch_status == "fetch_failed":
+                fetch_failures += 1
+
+        col_names.extend(["effective_date", "raw_json"])
+        col_values.extend([eff_date, json.dumps(resource)])
+
+        placeholders = ", ".join(["?"] * len(col_names))
+        col_list = ", ".join(f'"{c}"' for c in col_names)
+        db.execute(
+            f'INSERT OR REPLACE INTO "{table}" ({col_list}) VALUES ({placeholders})',
+            col_values,
+        )
+        stored += 1
+
+    db.commit()
+
+    # Print summary
+    parts = [f"  → Stored {stored} into {table}"]
+    if skipped:
+        parts.append(f"(skipped {skipped} case-duplicates)")
+    if fetch_failures:
+        parts.append(f"({fetch_failures} fetch failures)")
+    print(" ".join(parts))
+
+
+# =============================================================================
+# Patient demographics (special case — not a search)
+# =============================================================================
+
+def fetch_and_store_patient(base_url: str, patient_id: str, token: str, provider: str, db):
+    """Fetch and store patient demographics."""
+    try:
+        patient = fhir_get(base_url, f"Patient/{patient_id}", token)
+    except Exception as e:
+        print(f"  ⚠ Could not fetch Patient resource: {e}")
+        return
+
+    given_name = None
+    family_name = None
+    for name in patient.get("name", []):
+        given_parts = name.get("given", [])
+        family = name.get("family")
+        if given_parts or family:
+            given_name = " ".join(given_parts) if given_parts else None
+            family_name = family
+            if name.get("use") == "official":
+                break
+
+    birth_date = patient.get("birthDate")
+
+    db.execute("""
+        INSERT INTO patients (patient_id, provider, given_name, family_name, birth_date, raw_json, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(patient_id) DO UPDATE SET
+            given_name = excluded.given_name, family_name = excluded.family_name,
+            birth_date = excluded.birth_date, raw_json = excluded.raw_json,
+            updated_at = CURRENT_TIMESTAMP
+    """, (patient_id, provider, given_name, family_name, birth_date, json.dumps(patient)))
+    db.commit()
+    print(f"  Patient: {given_name or '?'} {family_name or '?'} (DOB: {birth_date or 'unknown'})")
+
+
+# =============================================================================
+# Main pull orchestration
+# =============================================================================
 
 def pull_for_patient(provider_name: str, tokens: dict, since: str = None):
-    """Pull all data for a single patient using the given tokens."""
+    """Pull all configured resources for a single patient."""
     access_token = tokens["access_token"]
     base_url = tokens["fhir_base_url"]
     patient_id = tokens.get("patient")
@@ -1040,127 +621,53 @@ def pull_for_patient(provider_name: str, tokens: dict, since: str = None):
         print(f"Since: {since}")
     print(f"{'='*60}\n")
 
-    # Initialize database
     init_db()
     db = get_db()
 
     try:
-        # Fetch and store patient demographics
-        patient_resource = fetch_patient_demographics(base_url, patient_id, access_token)
-        store_patient(db, patient_resource, provider_name, patient_id)
+        fetch_and_store_patient(base_url, patient_id, access_token, provider_name, db)
 
-        # Collect warnings per resource type for raw storage
+        # Pull each configured resource type
+        all_raw = {}
         all_warnings = {}
 
-        # Pull labs
-        labs, w = pull_labs(base_url, patient_id, access_token, since)
-        all_warnings["labs"] = w
-        handle_warnings(w, "Observation (labs)", provider_name, patient_id, db)
+        for config in RESOURCES:
+            label = config["label"]
+            entries, warnings = pull_and_store(
+                config, base_url, patient_id, access_token, provider_name, db, since
+            )
+            all_raw[label] = entries
+            all_warnings[label] = warnings
 
-        # Pull diagnostic reports
-        reports, w = pull_diagnostic_reports(base_url, patient_id, access_token, since)
-        all_warnings["reports"] = w
-        handle_warnings(w, "DiagnosticReport", provider_name, patient_id, db)
-
-        # Deduplicate: separate true labs from pathology/diagnostic text observations
-        labs, diagnostic_obs = deduplicate_labs_and_reports(labs, reports, base_url, access_token)
-
-        store_labs(db, labs, provider_name, patient_id)
-
-        # Store diagnostic reports (metadata + presentedForm content)
-        store_diagnostic_reports(db, reports, provider_name, patient_id, base_url, access_token)
-
-        # Pull notes
-        notes, w = pull_notes(base_url, patient_id, access_token, since)
-        all_warnings["notes"] = w
-        handle_warnings(w, "DocumentReference (notes)", provider_name, patient_id, db)
-        store_notes(db, notes, provider_name, patient_id, base_url, access_token)
-
-        # Pull conditions
-        conditions, w = pull_conditions(base_url, patient_id, access_token)
-        all_warnings["conditions"] = w
-        handle_warnings(w, "Condition", provider_name, patient_id, db)
-        store_conditions(db, conditions, provider_name, patient_id)
-
-        # Pull vitals
-        vitals, w = pull_vitals(base_url, patient_id, access_token, since)
-        all_warnings["vitals"] = w
-        handle_warnings(w, "Observation (vitals)", provider_name, patient_id, db)
-        store_vitals(db, vitals, provider_name, patient_id)
-
-        # Pull allergies
-        allergies, w = pull_allergies(base_url, patient_id, access_token)
-        all_warnings["allergies"] = w
-        handle_warnings(w, "AllergyIntolerance", provider_name, patient_id, db)
-        store_allergies(db, allergies, provider_name, patient_id)
-
-        # Pull encounters
-        encounters, w = pull_encounters(base_url, patient_id, access_token, since)
-        all_warnings["encounters"] = w
-        handle_warnings(w, "Encounter", provider_name, patient_id, db)
-        store_encounters(db, encounters, provider_name, patient_id)
-
-        # Pull medications
-        medications, w = pull_medications(base_url, patient_id, access_token, since)
-        all_warnings["medications"] = w
-        handle_warnings(w, "MedicationRequest", provider_name, patient_id, db)
-        store_medications(db, medications, provider_name, patient_id)
-
-        # Pull social history
-        social_history, w = pull_social_history(base_url, patient_id, access_token)
-        all_warnings["social_history"] = w
-        handle_warnings(w, "Observation (social history)", provider_name, patient_id, db)
-        store_social_history(db, social_history, provider_name, patient_id)
-
-        # Pull assessments
-        assessments, w = pull_assessments(base_url, patient_id, access_token, since)
-        all_warnings["assessments"] = w
-        handle_warnings(w, "Observation (assessments)", provider_name, patient_id, db)
-        store_assessments(db, assessments, provider_name, patient_id)
-
-        # Save raw data (entries + warnings — full OperationOutcome issues preserved)
+        # Save raw data archive
         RAW_PULLS_DIR.mkdir(exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        with open(RAW_PULLS_DIR / f"{provider_name}_{patient_id[:8]}_{timestamp}.json", "w") as f:
-            json.dump({
-                "labs": labs,
-                "notes": notes,
-                "reports": reports,
-                "conditions": conditions,
-                "vitals": vitals,
-                "allergies": allergies,
-                "encounters": encounters,
-                "medications": medications,
-                "social_history": social_history,
-                "assessments": assessments,
-                "warnings": all_warnings,
-            }, f, indent=2)
+        archive_path = RAW_PULLS_DIR / f"{provider_name}_{patient_id[:8]}_{timestamp}.json"
+        with open(archive_path, "w") as f:
+            json.dump({"resources": all_raw, "warnings": all_warnings}, f, indent=2)
 
-        print(f"\n✓ Done. Raw data saved to {RAW_PULLS_DIR}/")
+        print(f"\n✓ Done. Raw data saved to {archive_path}")
         print(f"  Database: {DB_PATH}")
 
-        # Show completeness warnings for this patient
-        warnings_for_patient = db.execute(
-            "SELECT resource_type FROM pull_warnings "
-            "WHERE provider = ? AND patient_id = ? AND warning_code = '4119'",
+        # Show completeness summary
+        incomplete = db.execute(
+            "SELECT DISTINCT resource_type FROM data_status "
+            "WHERE provider = ? AND patient_id = ? AND complete = 0",
             (provider_name, patient_id),
         ).fetchall()
-        if warnings_for_patient:
-            incomplete_types = [r[0] for r in warnings_for_patient]
-            print(f"\n  ⚠ Incomplete data ({len(incomplete_types)} resource types withheld by server):")
-            for rt in incomplete_types:
+        if incomplete:
+            print(f"\n  ⚠ Incomplete data ({len(incomplete)} resource types withheld):")
+            for (rt,) in incomplete:
                 print(f"    - {rt}")
-            print("    → Check app registration / org activation on open.epic.com")
 
     except PermissionError:
         print("\nToken expired. Attempting refresh...")
         try:
-            refreshed = refresh_access_token(provider_name, patient_id)
+            refresh_access_token(provider_name, patient_id)
             print("Token refreshed. Please run again.")
         except Exception as e:
             print(f"Refresh failed: {e}")
             print(f"Re-authenticate: python auth.py \"{provider_name}\"")
-
     finally:
         db.close()
 
@@ -1185,7 +692,6 @@ def main():
             target_patient = sys.argv[patient_idx]
 
     if target_patient:
-        # Pull for a specific patient
         tokens = load_tokens(provider_name, target_patient)
         if not tokens:
             print(f"No tokens for '{provider_name}' patient '{target_patient}'.")
@@ -1193,12 +699,10 @@ def main():
             sys.exit(1)
         pull_for_patient(provider_name, tokens, since)
     else:
-        # Pull for all patients at this provider
         all_tokens = load_all_tokens_for_provider(provider_name)
         if not all_tokens:
             print(f"No tokens for '{provider_name}'. Run: python auth.py \"{provider_name}\"")
             sys.exit(1)
-
         print(f"Found {len(all_tokens)} patient(s) for {provider_name}")
         for tokens in all_tokens:
             pull_for_patient(provider_name, tokens, since)
