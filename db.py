@@ -171,6 +171,7 @@ def init_db():
             medication_name TEXT,
             status TEXT,
             intent TEXT,
+            reported INTEGER,
             authored_on TEXT,
             dosage_text TEXT,
             requester TEXT,
@@ -255,6 +256,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_medications_provider ON medications(provider);
         CREATE INDEX IF NOT EXISTS idx_medications_patient ON medications(patient_id);
         CREATE INDEX IF NOT EXISTS idx_medications_status ON medications(status);
+        CREATE INDEX IF NOT EXISTS idx_medications_reported ON medications(reported);
         CREATE INDEX IF NOT EXISTS idx_social_history_provider ON social_history(provider);
         CREATE INDEX IF NOT EXISTS idx_social_history_patient ON social_history(patient_id);
         CREATE INDEX IF NOT EXISTS idx_assessments_provider ON assessments(provider);

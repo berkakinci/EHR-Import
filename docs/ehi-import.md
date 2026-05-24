@@ -23,19 +23,22 @@ This is the *complete* record — far more comprehensive than what the FHIR API 
 ## Usage
 
 ```bash
-# Import clinically relevant tables (default — ~40 key tables)
+# Import the entire export (point at the top-level Extracted/ directory)
+python ehi_import.py --source /path/to/Extracted --db ./ehi_export.db
+
+# Also works if pointed directly at the EHITables/ subdirectory
 python ehi_import.py --source /path/to/Extracted/EHITables --db ./ehi_export.db
-
-# Import ALL tables (7000+ tables, larger DB)
-python ehi_import.py --source /path/to/Extracted/EHITables --db ./ehi_export.db --all
-
-# Import specific tables only
-python ehi_import.py --source /path/to/EHITables --tables ORDER_RESULTS PAT_ENC HNO_INFO
 ```
+
+The tool auto-detects the directory structure. If `--source` contains an `EHITables/` subdirectory, it imports all TSV files from there and also ingests companion directories (Rich Text, Received C-CDA, Media) as BLOBs. If pointed directly at a directory of TSV files, it imports those.
 
 ## Output
 
-A SQLite database with one table per imported TSV file. All columns are stored as TEXT (the TSV files don't include type information). A `_ehi_metadata` table records import details.
+A SQLite database containing:
+
+- **One table per TSV file** — all columns stored as TEXT (TSV format doesn't encode types). Empty tables (header-only TSVs) are skipped.
+- **`_files` table** — binary/text content from Rich Text/, Received C-CDA/, and Media/ directories stored as BLOBs with filename and directory metadata.
+- **`_ehi_metadata` table** — import statistics (tables imported, rows, timing).
 
 ## Key Tables for Clinical Data
 

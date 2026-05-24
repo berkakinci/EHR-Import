@@ -66,8 +66,8 @@ access without re-login, see [DEVELOPMENT.md](docs/DEVELOPMENT.md) for confident
 In addition to the live FHIR API, you can import a complete record export requested through MyChart. This gives you access to data the API may withhold (notes, encounters, billing, etc.).
 
 ```bash
-# Import key clinical tables from an Epic EHI export
-python ehi_import.py --source /path/to/Extracted/EHITables --db ./ehi_export.db
+# Import the entire EHI export (all TSV tables + RTF/C-CDA/Media files)
+python ehi_import.py --source /path/to/Extracted --db ./ehi_export.db
 ```
 
 See [docs/ehi-import.md](docs/ehi-import.md) for details on requesting and using EHI exports.

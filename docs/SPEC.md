@@ -74,7 +74,7 @@ EHRs into a local, queryable database for personal health tracking and research.
 
 ## Future Considerations
 
-- C-CDA XML import (from MyChart "computer-readable export")
+- ~~C-CDA XML import (from MyChart "computer-readable export")~~ — partially done: `ehi_import.py` ingests the full EHI export into a separate SQLite DB (raw Clarity schema, not unified with FHIR DB)
 - Apple Health integration
 - Visualization/analysis tools on top of the local DB
 - TEFCA IAS for broader provider coverage

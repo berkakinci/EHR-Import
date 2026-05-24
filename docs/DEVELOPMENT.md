@@ -30,6 +30,8 @@ flowchart TD
 | `pull_data.py` | FHIR data fetching, deduplication, storage |
 | `db.py` | SQLite schema, connection management |
 | `discover_endpoints.py` | Finds FHIR base/auth/token endpoints via Epic Brands Bundle |
+| `ehi_import.py` | Imports Epic EHI (Requested Record) exports into SQLite — all TSV tables + companion files |
+| `compare_sources.py` | Compares record counts across EHI export and FHIR pull databases |
 | `probe_subresources.py` | Diagnostic tool: queries each subresource individually to identify access restrictions |
 | `jwks.json` | Public key (JWKS) for JWT auth — production |
 | `jwks-nonprod.json` | Public key (JWKS) for JWT auth — non-production |
@@ -171,7 +173,7 @@ See `db.py` for full schema. Tables:
 - `vitals` — vital sign observations (patient_id, code, value, unit, date)
 - `allergies` — allergy/intolerance records (patient_id, code, status, criticality, reactions)
 - `encounters` — visits and appointments (patient_id, type, class, dates, reason, participant)
-- `medications` — medication requests/orders (patient_id, medication name, status, dosage, requester)
+- `medications` — medication requests/orders (patient_id, medication name, status, intent, reported, dosage, requester)
 - `social_history` — social history observations (patient_id, code, value)
 - `assessments` — survey/questionnaire observations (patient_id, code, value, date)
 - `sync_log` — tracks pull history per provider

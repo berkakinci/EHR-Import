@@ -22,20 +22,104 @@ import sys
 from pathlib import Path
 
 
-# Mapping from FHIR pull_data.py tables to EHI (ehi_import.py) tables.
-# Each entry: (display_name, fhir_table, ehi_tables)
-# ehi_tables is a list because some FHIR resources map to multiple Epic tables.
+# Mapping from FHIR resource types to EHI tables.
+#
+# EHI data comes in two flavors:
+#   - Native: data originating at this institution (ORDER_MED, PAT_ENC, etc.)
+#   - Received: data from external providers via C-CDA (DOCS_RCVD_MEDS, etc.)
+#
+# FHIR may return a mix of both depending on the resource type and app permissions.
+#
+# Each entry: (display_name, fhir_table, ehi_query)
+# ehi_query is a SQL expression that returns a single count from the EHI DB.
+# Using raw SQL allows us to deduplicate, join, or count distinct as needed.
 RESOURCE_MAP = [
-    ("Labs",         "labs",               ["ORDER_RESULTS"]),
-    ("Reports",      "diagnostic_reports", ["ORDER_PROC"]),
-    ("Notes",        "notes",              ["HNO_INFO"]),
-    ("Encounters",   "encounters",         ["PAT_ENC"]),
-    ("Conditions",   "conditions",         ["PROBLEM_LIST"]),
-    ("Allergies",    "allergies",          ["ALLERGY"]),
-    ("Vitals",       "vitals",             ["IP_FLWSHT_MEAS"]),
-    ("Medications",  "medications",        ["ORDER_MED"]),
-    ("Social Hx",    "social_history",     ["SOCIAL_HX"]),
-    ("Assessments",  "assessments",        []),
+    (
+        "Labs",
+        "labs",
+        "SELECT COUNT(*) FROM ORDER_RESULTS",
+    ),
+    (
+        "Reports",
+        "diagnostic_reports",
+        "SELECT COUNT(*) FROM ORDER_PROC",
+    ),
+    (
+        "Notes",
+        "notes",
+        "SELECT COUNT(*) FROM HNO_INFO",
+    ),
+    (
+        "Encounters",
+        "encounters",
+        "SELECT COUNT(*) FROM PAT_ENC",
+    ),
+    (
+        "Conditions",
+        "conditions",
+        # FHIR Condition = Problem List + Encounter Diagnoses
+        # PROBLEM_LIST has the active problem list; PAT_ENC_DX has per-encounter dx.
+        # We sum both since FHIR returns both categories.
+        "SELECT (SELECT COUNT(*) FROM PROBLEM_LIST) + (SELECT COUNT(*) FROM PAT_ENC_DX)",
+    ),
+    (
+        "Allergies",
+        "allergies",
+        "SELECT COUNT(*) FROM ALLERGY",
+    ),
+    (
+        "Vitals",
+        "vitals",
+        "SELECT COUNT(*) FROM IP_FLWSHT_MEAS",
+    ),
+    (
+        "Medications",
+        "medications",
+        # FHIR MedicationRequest maps to multiple EHI sources:
+        # - ORDER_MED: prescriptions written at this institution
+        # - PAT_ENC_CURR_MEDS: current med list (deduplicated by med ID)
+        # - PAT_MEDS_HX: medication history entries
+        # We use the unique med count from PAT_ENC_CURR_MEDS as the best
+        # analog to what FHIR returns (the "current medication list").
+        # Also show ORDER_MED for context.
+        "SELECT COUNT(DISTINCT CURRENT_MED_ID) FROM PAT_ENC_CURR_MEDS",
+    ),
+    (
+        "Social Hx",
+        "social_history",
+        "SELECT COUNT(*) FROM SOCIAL_HX",
+    ),
+    (
+        "Assessments",
+        "assessments",
+        None,  # No clear EHI analog
+    ),
+    # Additional context rows (EHI-only, no FHIR equivalent)
+    (
+        "  +Rcvd Meds",
+        None,
+        "SELECT COUNT(*) FROM DOCS_RCVD_MEDS",
+    ),
+    (
+        "  +Rcvd Dx",
+        None,
+        "SELECT COUNT(*) FROM DOCS_RCVD_DX",
+    ),
+    (
+        "  +Rcvd Notes",
+        None,
+        "SELECT COUNT(*) FROM DOCS_RCVD_CLINICAL_NOTES",
+    ),
+    (
+        "  +Med Dispense",
+        None,
+        "SELECT COUNT(*) FROM MED_DISPENSE",
+    ),
+    (
+        "  +Files",
+        None,
+        "SELECT COUNT(*) FROM _files",
+    ),
 ]
 
 
@@ -44,25 +128,22 @@ def count_fhir(db: sqlite3.Connection, table: str, provider: str, patient_id: st
     try:
         row = db.execute(
             f"SELECT COUNT(*) FROM {table} WHERE provider=? AND patient_id=?",
-            (provider, patient_id)
+            (provider, patient_id),
         ).fetchone()
         return row[0] if row else 0
     except sqlite3.OperationalError:
         return "—"
 
 
-def count_ehi(db: sqlite3.Connection, tables: list[str]) -> int | str:
-    """Count rows across one or more EHI tables."""
-    if not tables:
+def count_ehi(db: sqlite3.Connection, query: str | None) -> int | str:
+    """Run a count query against the EHI database."""
+    if not query:
         return "—"
-    total = 0
-    for table in tables:
-        try:
-            row = db.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()
-            total += row[0] if row else 0
-        except sqlite3.OperationalError:
-            pass
-    return total if total > 0 else "—"
+    try:
+        row = db.execute(query).fetchone()
+        return row[0] if row and row[0] else "—"
+    except sqlite3.OperationalError:
+        return "—"
 
 
 def format_delta(base, compare) -> str:
@@ -115,14 +196,14 @@ def main():
 
     # Collect counts
     results = []
-    for name, fhir_table, ehi_tables in RESOURCE_MAP:
+    for name, fhir_table, ehi_query in RESOURCE_MAP:
         row = {"name": name}
         if ehi_db:
-            row["ehi"] = count_ehi(ehi_db, ehi_tables)
+            row["ehi"] = count_ehi(ehi_db, ehi_query)
         if fhir_db:
-            row["fhir"] = count_fhir(fhir_db, fhir_table, args.provider, args.patient)
+            row["fhir"] = count_fhir(fhir_db, fhir_table, args.provider, args.patient) if fhir_table else "—"
         if fhir2_db:
-            row["fhir2"] = count_fhir(fhir2_db, fhir_table, args.provider, args.patient)
+            row["fhir2"] = count_fhir(fhir2_db, fhir_table, args.provider, args.patient) if fhir_table else "—"
         results.append(row)
 
     # Print table
@@ -161,10 +242,11 @@ def main():
     # Print notes about interpretation
     if ehi_db and fhir_db:
         print("Notes:")
-        print("  • EHI Export is a raw Clarity table dump — row counts are table-specific")
-        print("  • FHIR resources may aggregate multiple Epic tables (e.g., Condition)")
-        print("  • EHI having fewer rows than FHIR is normal for some resource types")
-        print("  • EHI having more rows indicates data the FHIR API is withholding")
+        print("  • EHI 'native' counts are from this institution's own records")
+        print("  • '+Rcvd' rows show data received from external providers (C-CDA)")
+        print("  • FHIR may return a mix of native + received depending on resource type")
+        print("  • Conditions: EHI = PROBLEM_LIST + PAT_ENC_DX (FHIR deduplicates less)")
+        print("  • Medications: EHI = unique meds from PAT_ENC_CURR_MEDS")
         print()
 
     if fhir_db and fhir2_db:

@@ -678,13 +678,36 @@ def pull_allergies(base_url: str, patient_id: str, token: str) -> tuple[list, li
 
 
 def store_allergies(db, allergies: list, provider: str, patient_id: str):
-    """Store allergy/intolerance records in the database."""
+    """Store allergy/intolerance records in the database.
+
+    Deduplicates strictly on case and whitespace only — "NICKEL", "nickel",
+    and " Nickel " are the same entry; "ADHESIVE" and "WOUND DRESSING ADHESIVE"
+    are not.
+    """
     cursor = db.cursor()
     stored = 0
+    skipped = 0
+
+    # Track seen normalized names for this patient+provider
+    seen = set()
+    existing = cursor.execute(
+        "SELECT code_display FROM allergies WHERE patient_id=? AND provider=?",
+        (patient_id, provider),
+    ).fetchall()
+    for (name,) in existing:
+        if name:
+            seen.add(name.strip().lower())
 
     for allergy in allergies:
         fhir_id = allergy.get("id", "")
         code = allergy.get("code", {}).get("text") or _get_coding_display(allergy.get("code", {}))
+
+        # Strict dedup: collapse case and surrounding whitespace only
+        normalized = code.strip().lower() if code else ""
+        if normalized in seen:
+            skipped += 1
+            continue
+        seen.add(normalized)
 
         clinical_status_codings = allergy.get("clinicalStatus", {}).get("coding", [])
         clinical_status = clinical_status_codings[0].get("code") if clinical_status_codings else None
@@ -727,7 +750,7 @@ def store_allergies(db, allergies: list, provider: str, patient_id: str):
         stored += 1
 
     db.commit()
-    print(f"  → Stored {stored} allergies")
+    print(f"  → Stored {stored} allergies" + (f" (skipped {skipped} case-duplicates)" if skipped else ""))
 
 
 def pull_encounters(base_url: str, patient_id: str, token: str, since: str = None) -> tuple[list, list]:
@@ -823,6 +846,10 @@ def store_medications(db, medications: list, provider: str, patient_id: str):
         intent = med.get("intent", "")
         authored_on = med.get("authoredOn")
 
+        # reportedBoolean: True means outside/patient-reported (not ordered here)
+        reported_val = med.get("reportedBoolean")
+        reported = 1 if reported_val is True else (0 if reported_val is False else None)
+
         # Dosage instructions
         dosage_list = med.get("dosageInstruction", [])
         dosage_text = None
@@ -835,11 +862,11 @@ def store_medications(db, medications: list, provider: str, patient_id: str):
 
         cursor.execute("""
             INSERT OR REPLACE INTO medications
-            (fhir_id, patient_id, provider, medication_name, status, intent, authored_on,
-             dosage_text, requester, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (fhir_id, patient_id, provider, medication_name, status, intent, reported,
+             authored_on, dosage_text, requester, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            fhir_id, patient_id, provider, medication_name, status, intent,
+            fhir_id, patient_id, provider, medication_name, status, intent, reported,
             authored_on, dosage_text, requester, json.dumps(med),
         ))
         stored += 1
