@@ -58,14 +58,11 @@ for pkg in packages:
 # Config
 print("\n[Configuration]")
 try:
-    from config import (
-        PROJECT_DIR, DATA_DIR, DB_PATH, TOKEN_STORE,
-        ENDPOINTS_FILE, CLIENT_ID, REDIRECT_URI, PROVIDERS
-    )
+    from ehr_import import config
     check("config.json loaded", True)
-    check(f"Client ID configured", bool(CLIENT_ID), "Check config.json")
-    check(f"Redirect URI: {REDIRECT_URI}", "localhost" in REDIRECT_URI)
-    check(f"Providers configured: {len(PROVIDERS)}", len(PROVIDERS) > 0)
+    check(f"Client ID configured", bool(config.client_id), "Check config.json")
+    check(f"Redirect URI: {config.redirect_uri}", "localhost" in config.redirect_uri)
+    check(f"Providers configured: {len(config.providers)}", len(config.providers) > 0)
 except Exception as e:
     check("config.json loaded", False, str(e))
     print("\n  Cannot continue without config. Fix config.json first.")
@@ -73,15 +70,15 @@ except Exception as e:
 
 # Data directory
 print("\n[Data Directory]")
-check(f"Data dir exists: {DATA_DIR}", DATA_DIR.exists(),
+check(f"Data dir exists: {config.data_dir}", config.data_dir.exists(),
       f"Will be created on first run")
-if DATA_DIR.exists():
-    check("Data dir writable", DATA_DIR.is_dir(),
+if config.data_dir.exists():
+    check("Data dir writable", config.data_dir.is_dir(),
           "Check permissions")
 
 # Cert
 print("\n[TLS Certificate]")
-cert_dir = DATA_DIR / "certs"
+cert_dir = config.data_dir / "certs"
 cert_file = cert_dir / "localhost.pem"
 key_file = cert_dir / "localhost-key.pem"
 check("Self-signed cert exists", cert_file.exists() and key_file.exists(),
@@ -89,18 +86,18 @@ check("Self-signed cert exists", cert_file.exists() and key_file.exists(),
 
 # Endpoints
 print("\n[Endpoints]")
-check("Discovered endpoints file exists", ENDPOINTS_FILE.exists(),
-      "Run: python discover_endpoints.py", is_warning=True)
-if ENDPOINTS_FILE.exists():
+check("Discovered endpoints file exists", config.endpoints_file.exists(),
+      "Run: python discover.py", is_warning=True)
+if config.endpoints_file.exists():
     import json
-    with open(ENDPOINTS_FILE) as f:
+    with open(config.endpoints_file) as f:
         eps = json.load(f)
     configured = sum(1 for v in eps.values() if v and v.get("authorization_endpoint"))
     check(f"Providers with auth endpoints: {configured}/{len(eps)}", configured > 0)
 
 # Client secret
 print("\n[Authentication]")
-secret_file = DATA_DIR / "client_secret.txt"
+secret_file = config.data_dir / "client_secret.txt"
 check("Client secret file exists", secret_file.exists(),
       "Create DATA_DIR/client_secret.txt with your sandbox client secret",
       is_warning=True)

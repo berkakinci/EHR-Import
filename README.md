@@ -16,19 +16,19 @@ bash setup/setup_env.sh
 python setup/verify_setup.py
 
 # 3. Discover your provider's FHIR endpoints
-python discover_endpoints.py
+python discover.py
 
 # 4. Authenticate (opens browser for MyChart login)
 python auth.py "Boston Children's"
 
 # 5. Pull your records (all authorized patients at this provider)
-python pull_data.py "Boston Children's"
+python pull.py "Boston Children's"
 
 # 6. Pull a specific patient only
-python pull_data.py "Boston Children's" --patient <patient_id>
+python pull.py "Boston Children's" --patient <patient_id>
 
 # 7. Pull only new records since a date
-python pull_data.py "Boston Children's" --since 2024-06-01
+python pull.py "Boston Children's" --since 2024-06-01
 ```
 
 ## Authentication

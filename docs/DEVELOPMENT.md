@@ -4,58 +4,81 @@
 
 ```mermaid
 flowchart TD
-    config[config.py + config.json] --> auth
+    config[ehr_import/config.py + config.json] --> auth
     config --> discover
     config --> pull
 
-    discover[discover_endpoints.py] -->|finds FHIR URLs| endpoints[(discovered_endpoints.json)]
+    discover[ehr_import/discover.py] -->|finds FHIR URLs| endpoints[(discovered_endpoints.json)]
     endpoints --> auth
 
-    auth[auth.py] -->|OAuth2 via browser| epic[Epic FHIR API]
+    auth[ehr_import/auth.py] -->|OAuth2 via browser| epic[Epic FHIR API]
     auth -->|saves tokens| tokens[(tokens.json)]
 
     tokens --> pull
-    pull[pull_data.py] -->|fetches labs, notes, reports| epic
-    pull -->|stores structured data| db[(db.py / ehr_data.db)]
+    pull[ehr_import/pull.py] -->|orchestrates| client[ehr_import/client.py]
+    client -->|fetches resources| epic
+    pull -->|stores data| store[ehr_import/store.py / ehr_data.db]
     pull -->|saves raw JSON| raw[(raw_pulls/)]
 ```
 
-## File Responsibilities
+## Project Structure
 
-| File | Role |
-|------|------|
-| `config.py` | Central config: loads `config.json` + `.env`, resolves all paths |
-| `config.json` | Public config: app client IDs, redirect URI, provider list, active app selector |
-| `auth.py` | OAuth2 authorization code flow (public/secret/JWT), HTTPS callback server |
-| `pull_data.py` | Generic FHIR pull loop — fetches all configured resource types, stores in generic + convenience tables |
-| `resource_config.py` | Declares what to pull: FHIR types, search params, convenience table columns, hooks (dedup, content_fetch, effective_date) |
-| `db.py` | SQLite schema: generic `resources` table + auto-created convenience tables from config |
-| `discover_endpoints.py` | Finds FHIR base/auth/token endpoints via Epic Brands Bundle |
-| `ehi_import.py` | Imports Epic EHI (Requested Record) exports into SQLite — all TSV tables + companion files |
-| `compare_sources.py` | Compares record counts across EHI export and FHIR pull databases |
-| `probe_subresources.py` | Diagnostic tool: queries each subresource individually to identify access restrictions |
-| `jwks.json` | Public key (JWKS) for JWT auth — production |
-| `jwks-nonprod.json` | Public key (JWKS) for JWT auth — non-production |
-| `setup/generate_jwk.py` | Generates RSA key pair for JWT auth |
-| `setup/generate_cert.py` | Generates self-signed cert for HTTPS callback |
-| `setup/setup_env.sh` | Conda environment setup |
-| `setup/verify_setup.py` | Validates configuration and dependencies |
+```
+ehr_import/                  — Python package (core logic)
+  __init__.py                — package init, version
+  config.py                  — loads config.json + .env, resolves paths
+  client.py                  — FHIRClient class: authenticated requests, pagination, attachments
+  auth.py                    — OAuth2 flow: authorize, token exchange, PKCE, JWT, token storage
+  store.py                   — Database class: schema, generic + convenience storage, dedup, warnings
+  extract.py                 — field extraction engine: path resolution, special extractors
+  resources.py               — RESOURCES list: what to pull and how to store it
+  pull.py                    — orchestration: pull_for_patient, pull loop, raw archival
+  discover.py                — endpoint discovery via Epic Brands Bundle
+
+tools/                       — Standalone diagnostic/utility scripts
+  __init__.py
+  probe.py                   — probe_subresources: identifies access restrictions per subresource
+  compare.py                 — compare_sources: record count comparison across EHI/FHIR sources
+  ehi_import.py              — imports Epic EHI (Requested Record) TSV exports into SQLite
+
+Top-level entry points (thin wrappers):
+  auth.py                    → ehr_import.auth.main()
+  pull.py                    → ehr_import.pull.main()
+  discover.py                → ehr_import.discover.main()
+  db.py                      → Database init / status check
+  config.py                  → print_config()
+  ehi_import.py              → tools.ehi_import.main()
+  compare_sources.py         → tools.compare.main()
+  probe_subresources.py      → tools.probe.main()
+
+Other files:
+  config.json                — public config: app client IDs, redirect URI, providers, active app
+  jwks.json                  — public key (JWKS) for JWT auth — production
+  jwks-nonprod.json          — public key (JWKS) for JWT auth — non-production
+  setup/                     — setup_env.sh, generate_cert.py, generate_jwk.py, verify_setup.py
+  docs/                      — SPEC.md, DEVELOPMENT.md, registration-guide.md, ehi-import.md
+  assets/                    — app icon
+```
 
 ## Data Flow
 
-1. `discover_endpoints.py` finds FHIR URLs → saves to `discovered_endpoints.json`
-2. `auth.py` runs OAuth2 flow → saves tokens to `tokens.json`
-3. `pull_data.py` uses tokens to query FHIR → stores in `ehr_data.db` + `raw_pulls/`
+1. `python discover.py` finds FHIR URLs → saves to `discovered_endpoints.json`
+2. `python auth.py "<provider>"` runs OAuth2 flow → saves tokens to `tokens.json`
+3. `python pull.py "<provider>"` uses tokens to query FHIR → stores in `ehr_data.db` + `raw_pulls/`
 
 ## Key Design Decisions
 
-- **Two-tier storage** — all FHIR resources go into a generic `resources` table (raw JSON + metadata); configured types also get materialized into convenience tables with curated columns. Adding a new resource type = one dict in `resource_config.py`.
-- **Config-driven extraction** — `resource_config.py` declares column mappings using a path syntax (e.g., `"requester.display"`, `"@coding_display:code"`). No per-type store functions.
+- **Package structure** — core logic lives in `ehr_import/` package; top-level scripts are thin entry points (3-5 lines). Tools that don't depend on the FHIR pipeline live in `tools/`.
+- **Config as module namespace** — `from ehr_import import config` then `config.db_path`, `config.providers`, etc. Module-level globals loaded once at import time. No class needed — Python modules are singletons.
+- **FHIRClient class** — wraps base_url + token into a single object. Handles authenticated GET, pagination, and attachment fetching. Eliminates threading (base_url, token) through every function.
+- **Database class** — context manager (`with Database() as db:`). Owns schema creation, generic + convenience storage, dedup, and warning handling.
+- **Two-tier storage** — all FHIR resources go into a generic `resources` table (raw JSON + metadata); configured types also get materialized into convenience tables with curated columns. Adding a new resource type = one dict in `resources.py`.
+- **Config-driven extraction** — `resources.py` declares column mappings using a path syntax (e.g., `"requester.display"`, `"@coding_display:code"`). No per-type store functions.
 - **Hooks for special handling** — `dedup` (case-insensitive allergy dedup), `content_fetch` (chase Binary URLs for notes/reports), `effective_date` (priority list of date fields)
 - **`reinterpreted` flag** — resources that have a convenience table are marked `reinterpreted=1` in the generic table, so exploratory queries on `resources` can skip them
 - **Configurable data directory** — private data lives outside the repo (default sibling dir)
 - **Per-provider tokens** — each provider gets its own token record; supports multiple EHRs
-- **Multi-patient token store** — tokens keyed by `provider:patient_id`; re-auth for a different patient accumulates (doesn't overwrite); `pull_data.py` pulls all patients by default
+- **Multi-patient token store** — tokens keyed by `provider:patient_id`; re-auth for a different patient accumulates (doesn't overwrite); `pull.py` pulls all patients by default
 - **Multi-patient support** — `patient_id` column on all data tables; supports pulling records for family members via proxy access
 - **OperationOutcome filtering** — Epic sometimes includes OperationOutcome resources in Bundle entries; these are separated into warnings before storage
 - **HTTPS callback with retry loop** — Epic requires secure redirect URIs; the callback server loops to survive browser cert warnings and preflight requests on first use
@@ -160,20 +183,39 @@ After marking an app "Ready for Production" on open.epic.com:
 5. Leave "Use App-level Endpoint URIs" checked unless redirect URIs vary per org (our single localhost redirect works fine at app level)
 6. There may be a sync delay (up to 1 business day) before the org recognizes the client ID
 
+## Adding a New Resource Type
+
+Add one dict to `ehr_import/resources.py`:
+
+```python
+{
+    "fhir_type": "FHIRResourceType",
+    "label": "Human-readable label",
+    "search_params": {},
+    "table": "convenience_table_name",
+    "columns": {
+        "col_name": "path.to.field | fallback.path",
+    },
+    "effective_date": ["dateField1", "dateField2"],
+}
+```
+
+Then run `python db.py` to create the new table, and `python pull.py` to populate it.
+
 ## Adding a New Provider
 
-1. Add entry to `config.json` under `providers` with `mychart_base` URL
-2. Run `python discover_endpoints.py` to find its FHIR endpoints
+1. Add entry to `config.json` under `providers` with `portal_url` or `hint`
+2. Run `python discover.py` to find its FHIR endpoints
 3. Run `python auth.py "<new provider>"` to authenticate
 
 ## Database Schema
 
-See `db.py` and `resource_config.py` for full schema. Two-tier design:
+See `ehr_import/store.py` and `ehr_import/resources.py` for full schema. Two-tier design:
 
 ### Generic table
 - `resources` — every FHIR resource (fhir_id, resource_type, label, patient_id, provider, effective_date, reinterpreted, raw_json)
 
-### Convenience tables (auto-created from resource_config.py)
+### Convenience tables (auto-created from resources.py)
 - `labs` — lab results (code, value, unit, reference_range, status)
 - `vitals` — vital signs (code, value, unit, status)
 - `notes` — clinical notes (doc_type, author, date, status, content_text + fetch tracking)
@@ -202,7 +244,7 @@ All convenience tables include `patient_id`, `provider`, `effective_date`, `raw_
 
 ```bash
 python auth.py "Epic Sandbox"
-python pull_data.py "Epic Sandbox"
+python pull.py "Epic Sandbox"
 ```
 
 Epic Sandbox is configured as a provider with `"non_production": true` in config.json,
@@ -212,8 +254,8 @@ so it automatically uses the non-production client ID. Sandbox test credentials:
 
 - `requests` — HTTP client for FHIR API calls
 - `python-dotenv` — .env file loading
-- `httpx` — async HTTP (for future parallel fetching)
-- `cryptography` — self-signed cert generation
+- `PyJWT` — JWT signing for confidential client auth
+- `cryptography` — self-signed cert generation, RSA key handling
 
 ## App Registration
 

@@ -18,7 +18,8 @@ from pathlib import Path
 
 # Add parent directory to path so we can import config
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import DATA_DIR
+from ehr_import import config
+DATA_DIR = config.data_dir
 
 CERT_DIR = DATA_DIR / "certs"
 CERT_FILE = CERT_DIR / "localhost.pem"

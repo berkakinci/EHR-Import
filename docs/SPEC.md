@@ -22,27 +22,32 @@ EHRs into a local, queryable database for personal health tracking and research.
 
 ## Data Scope
 
-### Primary (implemented)
+### Implemented
 
 | Data Type | FHIR Resource | Storage |
 |-----------|--------------|---------|
 | Lab results | Observation (category: laboratory) | `labs` table |
-| Clinical notes | DocumentReference (category: clinical-note) | `notes` table (with content fetch tracking) |
-| Diagnostic reports | DiagnosticReport (presentedForm + result refs) | `diagnostic_reports` table (with content fetch tracking) |
+| Vital signs | Observation (category: vital-signs) | `vitals` table |
+| Clinical notes | DocumentReference (category: clinical-note) | `notes` table (with content fetch) |
+| Diagnostic reports | DiagnosticReport | `diagnostic_reports` table (with content fetch) |
+| Conditions | Condition | `conditions` table |
+| Allergies | AllergyIntolerance | `allergies` table (case-deduped) |
+| Encounters | Encounter | `encounters` table |
+| Medications | MedicationRequest | `medications` table |
+| Social history | Observation (category: social-history) | `social_history` table |
+| Assessments | Observation (category: survey) | `assessments` table |
+| Immunizations | Immunization | `immunizations` table |
+| Medication dispenses | MedicationDispense | `medication_dispenses` table |
+| Procedures | Procedure | `procedures` table |
+| Care plans | CarePlan | `care_plans` table |
+| Goals | Goal | `goals` table |
 
-### Secondary (registered, not yet pulled)
+### Not yet implemented
 
 | Data Type | FHIR Resource | Notes |
 |-----------|--------------|-------|
 | Imaging studies | Media (Study), Binary (Study) | DICOM images if available |
 | Study findings | Observation (Study Finding) | Structured imaging findings |
-| Vital signs | Observation (category: vital-signs) | BP, HR, temp, weight |
-| Conditions | Condition | Problem list, diagnoses |
-| Encounters | Encounter | Visit history |
-| Social history | Observation (category: social-history) | Smoking, alcohol, etc. |
-| Assessments | Observation (category: survey) | PHQ-9, GAD-7, etc. |
-| Allergies | AllergyIntolerance | If registered |
-| Medications | MedicationRequest | If registered |
 
 ## Authentication
 

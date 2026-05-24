@@ -61,7 +61,7 @@ A SQLite database containing:
 
 The EHI export and FHIR API pull produce **different database schemas** and are not directly interchangeable:
 
-- **`pull_data.py`** → `ehr_data.db` — Normalized, curated tables (`labs`, `notes`, `conditions`). Designed for ongoing incremental pulls. Clean column names, FHIR resource IDs.
+- **`pull.py`** → `ehr_data.db` — Normalized, curated tables (`labs`, `notes`, `conditions`). Designed for ongoing incremental pulls. Clean column names, FHIR resource IDs.
 - **`ehi_import.py`** → `ehi_export.db` — Raw Epic Clarity tables with original column names. One-time bulk import. Complete record but requires Epic schema knowledge to navigate.
 
 The EHI export is useful for:

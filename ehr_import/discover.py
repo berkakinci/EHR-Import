@@ -15,10 +15,10 @@ import time
 
 import requests
 
-from config import DATA_DIR, ENDPOINTS_FILE, PROVIDERS
+from . import config
 
 
-BRANDS_FILE = DATA_DIR / "epic_brands_bundle.json"
+BRANDS_FILE = config.data_dir / "epic_brands_bundle.json"
 BRANDS_URL = "https://open.epic.com/Endpoints/Brands"
 BRANDS_MAX_AGE = 3 * 86400  # 3 days
 
@@ -197,9 +197,9 @@ def main():
 
     results = {}
 
-    for name, config in PROVIDERS.items():
+    for name, prov_config in config.providers.items():
         print(f"\n--- {name} ---")
-        result = discover_provider(name, config, brands)
+        result = discover_provider(name, prov_config, brands)
         if result:
             print(f"  ✓ {result['fhir_base_url']}")
             results[name] = result
@@ -208,10 +208,6 @@ def main():
             results[name] = None
 
     # Save results
-    with open(ENDPOINTS_FILE, "w") as f:
+    with open(config.endpoints_file, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"\n\nResults saved to {ENDPOINTS_FILE}")
-
-
-if __name__ == "__main__":
-    main()
+    print(f"\n\nResults saved to {config.endpoints_file}")

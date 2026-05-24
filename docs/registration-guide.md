@@ -156,7 +156,7 @@ https://<mychart-host>/MyChart/.well-known/smart-configuration
 
 Or look it up on: https://open.epic.com/MyApps/Endpoints
 
-The `discover_endpoints.py` script automates this.
+The `discover.py` script automates this.
 
 ## Programmatic Access to Epic API Specifications
 

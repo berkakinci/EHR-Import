@@ -25,9 +25,10 @@ from cryptography.hazmat.primitives import serialization
 SCRIPT_DIR = Path(__file__).parent.resolve()
 PROJECT_DIR = SCRIPT_DIR.parent
 
-# Import config to get DATA_DIR
+# Import config to get data_dir
 sys.path.insert(0, str(PROJECT_DIR))
-from config import DATA_DIR
+from ehr_import import config
+DATA_DIR = config.data_dir
 
 
 def int_to_base64url(n: int) -> str:
