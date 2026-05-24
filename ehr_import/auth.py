@@ -274,7 +274,7 @@ def load_endpoint_config(provider_name: str) -> dict:
     """Load discovered endpoints for a provider."""
     if not config.endpoints_file.exists():
         raise FileNotFoundError(
-            "Run discover_endpoints.py first to find your provider's FHIR URLs"
+            "Run discover.py first to find your provider's FHIR URLs"
         )
 
     with open(config.endpoints_file) as f:
@@ -596,25 +596,3 @@ def refresh_access_token(provider_name: str, patient_id: str | None = None) -> d
     save_tokens(provider_name, tokens)
     print(f"✓ Token refreshed for {provider_name} (method: {auth_method})")
     return tokens
-
-
-def main():
-    """CLI entry point for auth."""
-    import sys
-
-    if len(sys.argv) < 2:
-        print("Usage: python auth.py <provider_name>")
-        usable = _get_usable_auth_methods()
-        print(f"\n  Configured auth methods: {config.auth_methods}")
-        print(f"  Usable (credentials available): {usable}")
-        print("\nAvailable providers (from discovered_endpoints.json):")
-        if config.endpoints_file.exists():
-            with open(config.endpoints_file) as f:
-                for name in json.load(f):
-                    print(f"  - \"{name}\"")
-        else:
-            print("  (run discover_endpoints.py first)")
-        sys.exit(1)
-
-    provider = sys.argv[1]
-    authorize(provider)

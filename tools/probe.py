@@ -6,19 +6,18 @@ category individually so we can see precisely which ones succeed, which return d
 and which return OperationOutcome warnings.
 
 Usage:
-    python probe.py <provider_name> [--patient <patient_id>]
+    python probe_subresources.py <provider_name> [--patient <patient_id>]
 
 If --patient is omitted, uses the first patient found for that provider.
 """
 
 import json
-import sys
 from datetime import datetime
 
 import requests
 
 from ehr_import import config
-from ehr_import.auth import load_tokens, load_all_tokens_for_provider, refresh_access_token
+from ehr_import.auth import refresh_access_token
 
 
 # Each entry: (resource_path, params_override, label)
@@ -218,35 +217,3 @@ def run_probes(provider_name: str, tokens: dict):
     with open(outfile, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\n  Results saved: {outfile}")
-
-
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python probe.py <provider_name> [--patient <patient_id>]")
-        sys.exit(1)
-
-    provider_name = sys.argv[1]
-    target_patient = None
-
-    if "--patient" in sys.argv:
-        patient_idx = sys.argv.index("--patient") + 1
-        if patient_idx < len(sys.argv):
-            target_patient = sys.argv[patient_idx]
-
-    if target_patient:
-        tokens = load_tokens(provider_name, target_patient)
-        if not tokens:
-            print(f"No tokens for '{provider_name}' patient '{target_patient}'.")
-            sys.exit(1)
-    else:
-        all_tokens = load_all_tokens_for_provider(provider_name)
-        if not all_tokens:
-            print(f"No tokens for '{provider_name}'. Run: python auth.py \"{provider_name}\"")
-            sys.exit(1)
-        tokens = all_tokens[0]
-
-    run_probes(provider_name, tokens)
-
-
-if __name__ == "__main__":
-    main()

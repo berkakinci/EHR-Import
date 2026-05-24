@@ -22,7 +22,6 @@ The tool auto-detects whether --source points to the top-level Extracted/
 directory or directly to the EHITables/ subdirectory.
 """
 
-import argparse
 import sqlite3
 import sys
 import time
@@ -271,28 +270,3 @@ def build_database(source_dir: Path, db_path: Path):
     print(f"  DB:     {db_path} ({db_size:.1f} MB)")
 
     db.close()
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Import an Epic EHI export into SQLite (imports everything)"
-    )
-    parser.add_argument(
-        "--source",
-        type=Path,
-        required=True,
-        help="Path to the Extracted/ directory (or EHITables/ directly)",
-    )
-    parser.add_argument(
-        "--db",
-        type=Path,
-        default=Path("ehi_export.db"),
-        help="Output database path (default: ./ehi_export.db)",
-    )
-
-    args = parser.parse_args()
-    build_database(args.source, args.db)
-
-
-if __name__ == "__main__":
-    main()

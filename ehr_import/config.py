@@ -83,5 +83,3 @@ def print_config():
     print(f"Providers:         {list(providers.keys())}")
 
 
-if __name__ == "__main__":
-    print_config()
