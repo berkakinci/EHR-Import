@@ -61,6 +61,17 @@ access without re-login, see [DEVELOPMENT.md](docs/DEVELOPMENT.md) for confident
 - OperationOutcome warnings captured in full for forensic analysis
 - Multi-patient support — pull records for family members from the same provider
 
+## EHI Export (Full Record Import)
+
+In addition to the live FHIR API, you can import a complete record export requested through MyChart. This gives you access to data the API may withhold (notes, encounters, billing, etc.).
+
+```bash
+# Import key clinical tables from an Epic EHI export
+python ehi_import.py --source /path/to/Extracted/EHITables --db ./ehi_export.db
+```
+
+See [docs/ehi-import.md](docs/ehi-import.md) for details on requesting and using EHI exports.
+
 ## Supported Providers
 
 Any Epic-based health system with MyChart. Pre-configured:
