@@ -51,13 +51,17 @@ access without re-login, see [DEVELOPMENT.md](docs/DEVELOPMENT.md) for confident
 - **Diagnostic reports** — imaging, pathology, lab panels with presentedForm content
 - **Conditions** — diagnoses, problems, health concerns
 - **Vital signs** — height, weight, blood pressure, temperature, etc.
-- **Allergies** — allergens, reactions, criticality
+- **Allergies** — allergens, reactions, criticality (case-deduplicated)
 - **Encounters** — office visits, telehealth, ED visits, hospitalizations
-- **Medications** — active and historical prescriptions with dosage
+- **Medications** — active and historical prescriptions with dosage; `reported` flag distinguishes native vs outside/patient-reported
 - **Social history** — smoking status, etc.
 - **Assessments** — survey/questionnaire results (PHQ-9, GAD-7, etc.)
+- **Immunizations** — vaccination records
+- **Medication dispenses** — pharmacy dispensing records
+- **Procedures** — surgical and clinical procedures
+- **Care plans** and **Goals** — treatment plans and patient goals
 - Stored in a local SQLite database you can query however you like
-- Raw FHIR JSON preserved alongside structured storage
+- Generic `resources` table holds every FHIR resource as raw JSON; convenience tables provide curated columns for the types above
 - OperationOutcome warnings captured in full for forensic analysis
 - Multi-patient support — pull records for family members from the same provider
 

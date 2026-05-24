@@ -27,8 +27,9 @@ flowchart TD
 | `config.py` | Central config: loads `config.json` + `.env`, resolves all paths |
 | `config.json` | Public config: app client IDs, redirect URI, provider list, active app selector |
 | `auth.py` | OAuth2 authorization code flow (public/secret/JWT), HTTPS callback server |
-| `pull_data.py` | FHIR data fetching, deduplication, storage |
-| `db.py` | SQLite schema, connection management |
+| `pull_data.py` | Generic FHIR pull loop — fetches all configured resource types, stores in generic + convenience tables |
+| `resource_config.py` | Declares what to pull: FHIR types, search params, convenience table columns, hooks (dedup, content_fetch, effective_date) |
+| `db.py` | SQLite schema: generic `resources` table + auto-created convenience tables from config |
 | `discover_endpoints.py` | Finds FHIR base/auth/token endpoints via Epic Brands Bundle |
 | `ehi_import.py` | Imports Epic EHI (Requested Record) exports into SQLite — all TSV tables + companion files |
 | `compare_sources.py` | Compares record counts across EHI export and FHIR pull databases |
@@ -48,19 +49,21 @@ flowchart TD
 
 ## Key Design Decisions
 
+- **Two-tier storage** — all FHIR resources go into a generic `resources` table (raw JSON + metadata); configured types also get materialized into convenience tables with curated columns. Adding a new resource type = one dict in `resource_config.py`.
+- **Config-driven extraction** — `resource_config.py` declares column mappings using a path syntax (e.g., `"requester.display"`, `"@coding_display:code"`). No per-type store functions.
+- **Hooks for special handling** — `dedup` (case-insensitive allergy dedup), `content_fetch` (chase Binary URLs for notes/reports), `effective_date` (priority list of date fields)
+- **`reinterpreted` flag** — resources that have a convenience table are marked `reinterpreted=1` in the generic table, so exploratory queries on `resources` can skip them
 - **Configurable data directory** — private data lives outside the repo (default sibling dir)
 - **Per-provider tokens** — each provider gets its own token record; supports multiple EHRs
 - **Multi-patient token store** — tokens keyed by `provider:patient_id`; re-auth for a different patient accumulates (doesn't overwrite); `pull_data.py` pulls all patients by default
 - **Multi-patient support** — `patient_id` column on all data tables; supports pulling records for family members via proxy access
-- **Lab/report deduplication** — cross-references DiagnosticReport results against Observations to avoid double-counting (pattern from FetchMyEpicToken)
-- **OperationOutcome filtering** — Epic sometimes includes OperationOutcome resources in Bundle entries (e.g., parameter warnings); these are filtered out before storage
+- **OperationOutcome filtering** — Epic sometimes includes OperationOutcome resources in Bundle entries; these are separated into warnings before storage
 - **HTTPS callback with retry loop** — Epic requires secure redirect URIs; the callback server loops to survive browser cert warnings and preflight requests on first use
 - **Per-provider redirect URI** — some providers behind the CHPPOC network have web application firewall (WAF) rules that block `localhost` in query strings; these use `lvh.me` (resolves to 127.0.0.1) as the redirect host instead. This is safe because PKCE protects the flow: even if `lvh.me` DNS were hijacked, the intercepted authorization code is useless without the `code_verifier` that never leaves your machine.
 - **Dual auth support** — public client (PKCE, no secrets) for open-source distribution; confidential client (JWT assertion) for personal use with refresh tokens
 - **Raw JSON preservation** — every pull saves raw FHIR responses alongside structured DB storage; includes full OperationOutcome issue objects per resource type
 - **Unfiltered warning capture** — all OperationOutcome issues are stored in `pull_warnings` with full JSON, severity, code, text, and diagnostics. No pre-filtering — this is a forensic log for diagnosing access restrictions.
 - **Content fetch tracking** — notes and diagnostic reports track fetch status (`ok`, `fetch_failed`, `empty`, `no_attachment`) with the resolved URL, enabling automated retry of failed fetches
-- **Large binary content not yet handled** — all fetched Binary content (note text, report HTML) is stored inline in SQLite as `content_text`. This works for typical clinical notes (a few KB) but will bloat the database if imaging data (DICOM, large PDFs) is encountered. When that happens, large content should be written to disk (e.g., `files/{fhir_id}.{ext}`) with only the path stored in the database.
 
 ## Authentication Methods
 
@@ -164,25 +167,35 @@ After marking an app "Ready for Production" on open.epic.com:
 
 ## Database Schema
 
-See `db.py` for full schema. Tables:
+See `db.py` and `resource_config.py` for full schema. Two-tier design:
+
+### Generic table
+- `resources` — every FHIR resource (fhir_id, resource_type, label, patient_id, provider, effective_date, reinterpreted, raw_json)
+
+### Convenience tables (auto-created from resource_config.py)
+- `labs` — lab results (code, value, unit, reference_range, status)
+- `vitals` — vital signs (code, value, unit, status)
+- `notes` — clinical notes (doc_type, author, date, status, content_text + fetch tracking)
+- `diagnostic_reports` — imaging/pathology/lab panels (code, status, content_text + fetch tracking)
+- `conditions` — diagnoses and problems (code, clinical/verification status, category, onset/abatement)
+- `allergies` — allergy/intolerance (code, status, type, category, criticality, reactions) — case-deduped
+- `encounters` — visits (type, status, class, dates, reason, participant)
+- `medications` — medication requests (name, status, intent, reported, dosage, requester)
+- `social_history` — social history observations (code, value, status)
+- `assessments` — survey/questionnaire results (code, value, status)
+- `immunizations` — vaccinations (vaccine_name, status, occurrence_date, site, performer)
+- `medication_dispenses` — pharmacy dispensing (name, status, quantity, days_supply, when_handed_over)
+- `procedures` — procedures (code, status, performed_date, performer, reason)
+- `care_plans` — care plans (title, status, intent, category, dates)
+- `goals` — patient goals (description, lifecycle_status, dates)
+
+### Operational tables
 - `patients` — demographics (name, DOB, provider)
-- `labs` — structured lab results (patient_id, code, value, unit, reference range, date)
-- `notes` — clinical notes (patient_id, type, author, date, full text content, fetch status/URL)
-- `diagnostic_reports` — imaging/pathology/lab panels (patient_id, code, date, presentedForm content, result observation refs, fetch status/URL)
-- `conditions` — diagnoses and problems (patient_id, code, clinical/verification status, category, onset/abatement dates)
-- `vitals` — vital sign observations (patient_id, code, value, unit, date)
-- `allergies` — allergy/intolerance records (patient_id, code, status, criticality, reactions)
-- `encounters` — visits and appointments (patient_id, type, class, dates, reason, participant)
-- `medications` — medication requests/orders (patient_id, medication name, status, intent, reported, dosage, requester)
-- `social_history` — social history observations (patient_id, code, value)
-- `assessments` — survey/questionnaire observations (patient_id, code, value, date)
-- `sync_log` — tracks pull history per provider
-- `pull_warnings` — append-only log of all OperationOutcome issues (severity, code, text, diagnostics, full JSON)
+- `pull_warnings` — append-only log of all OperationOutcome issues
 - `data_status` — current completeness state per provider/patient/resource_type
+- `sync_log` — tracks pull history
 
-All data tables include `patient_id` (FHIR patient ID from the token response) to support multiple family members from the same provider. Unique constraint is `(fhir_id, patient_id)`.
-
-Content fetch tracking columns (`content_fetch_status`, `content_fetch_detail`, `content_fetch_url`) on `notes` and `diagnostic_reports` enable querying for failed fetches and retrying them with a fresh token.
+All convenience tables include `patient_id`, `provider`, `effective_date`, `raw_json`, and `UNIQUE(fhir_id, patient_id)`.
 
 ## Testing Against Epic Sandbox
 
