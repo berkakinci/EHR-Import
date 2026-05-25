@@ -2,6 +2,11 @@
     "active_app": "public",
     "apps": {
         "public": {
+            "client_id": "a97fe33f-b209-4960-9c89-3bb5c2bf1b08",
+            "non_production_client_id": "53e4e9be-f4e9-4beb-83a5-380aeeaeef9f",
+            "auth_methods": ["public"]
+        },
+        "public_limited": {
             "client_id": "68d83ddb-87a8-411d-9876-e3fc38dff9ed",
             "non_production_client_id": "fffb2dd4-82eb-4228-99bf-1a2c907c482a",
             "auth_methods": ["public"]
