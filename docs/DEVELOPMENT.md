@@ -190,11 +190,20 @@ These are captured in the `pull_warnings` table for forensic analysis.
 
 ### Warning Codes
 
+Epic returns multiple `issue` entries within a single OperationOutcome response. The codes
+work together:
+
+- **4119 is a generic summary flag** — it accompanies one or more specific 59204/59205
+  entries. It means "this response is incomplete" but doesn't say why on its own. The
+  specific 59204/59205 sibling issues name exactly which sub-resource was withheld.
+- On the USCDI v3 app with full endpoint registration, every 4119 has an accompanying
+  59204 or 59205 that explains it. No standalone unexplained 4119s have been observed.
+
 | Code | Level | Meaning |
 |------|-------|---------|
-| 4119 | Generic | "May not contain the entire record." Attached to nearly every response — even when data is actually complete (e.g., labs 120/120). Signals that *some* sub-resource category was withheld, but doesn't name which. |
+| 4119 | Generic | "May not contain the entire record." Summary flag — always paired with a specific 59204 or 59205 that names the withheld sub-resource. |
 | 59204 | App-level | "Client not authorized for [Resource] - [Sub-resource]." The **app registration** is missing a specific API endpoint. Affects all users equally regardless of login. Fix: register a new app with the missing endpoints (production-locked apps cannot be modified). |
-| 59205 | User-level | "User not authorized for [Resource] - Outside Record." The **authenticated user** lacks permission to view external/received data. Observed exclusively on proxy/guardian logins — direct patient logins do not trigger this. Nothing the app developer can do; this is an Epic access control decision based on the user's relationship to the patient. |
+| 59205 | User-level | "User not authorized for [Resource] - [Sub-resource]." The **authenticated user** lacks permission to view that sub-resource. Observed on proxy/guardian logins (blocked from "Outside Record" data) and on sandbox test users (blocked from specialty sub-resources like Genomics, SmartData Elements). Nothing the app developer can do. |
 | 4101 | Informational | "Resource request returns no results." Normal — the patient simply has no data of that type. |
 | 59100 | Informational | "Content invalid against the specification." Usually a parameter warning (e.g., unknown param ignored). |
 
@@ -206,41 +215,34 @@ These are captured in the `pull_warnings` table for forensic analysis.
 - Impact: Medications 15→131, Immunizations 6→74, MedicationDispense 0→77, Procedures 0→27, Allergies 2→6
 
 **App-level (59204) — affects both logins equally:**
-- Named denials: Condition (Genomics, Dental Finding, Infection, Medical History, Reason For Visit), Procedure (Patient-Reported Surgical History, External Radiotherapy Summary)
-- Unnamed gaps (4119 only, no 59204 diagnostic): Notes (13/228), Reports (28/92), Encounters (15/80), Vitals (52/93)
+- Named denials on production (Tufts): Condition (Genomics, Dental Finding, Infection, Medical History, Reason For Visit)
+- These are non-USCDI sub-resources not included in the USCDI v3 automatic distribution
 
-### Root Cause of App-Level Gaps
+### Remaining Gaps (USCDI v3 App)
 
-The app (`f2a91bd8`, "EHR Import - Confidential - All Inclusive") is missing several
-DocumentReference sub-resource endpoints despite being intended to cover all patient-facing
-R4 APIs. Confirmed via unfiltered query (59204 diagnostics):
+The USCDI v3 app (`f2a91bd8`) is missing some non-USCDI sub-resources. On production
+(Tufts), these appear as 59204 denials for Condition (Genomics, Dental Finding, Infection,
+Medical History, Reason For Visit). These are unlikely to contain data for most patients.
 
-**DocumentReference — 10 denied sub-resources:**
-- Document Information
-- OASIS, HIS, Handoff, IRF-PAI, Minimum Data Set (facility-specific, likely irrelevant)
-- **External CDAs** — imported C-CDA documents from other providers
-- **Clinical References** — reference documents
-- **Radiology Results** — imaging reports
-- **Correspondences** — letters, messages
+The apparent gaps in record counts between EHI export and FHIR pull are mostly data model
+differences, not access restrictions:
 
-These account for the bulk of the Notes gap (13/228 in EHI). The EHI's `HNO_INFO` table
-contains all note types; FHIR only returns the sub-resources the app is authorized for.
+**DocumentReference (13 via FHIR vs 228 in EHI):** The EHI's `HNO_INFO` table contains all
+note types. FHIR returns only sub-resources the app is authorized for. The USCDI v3 app
+has Clinical Notes but is missing some non-USCDI DocumentReference sub-resources (Document
+Information, External CDAs, Clinical References, Radiology Results, Correspondences, etc.).
 
-**DiagnosticReport — no 59204 denials.** The apparent gap (28 vs 92 in EHI) is a comparison
-artifact: EHI's `ORDER_PROC` includes lab orders (75/92) which map to Observation in FHIR,
-not DiagnosticReport. Excluding labs, EHI has ~17 non-lab procedures vs 28 FHIR reports — 
-FHIR actually returns *more* (includes outside record results).
+**DiagnosticReport (28 vs 92 in EHI):** Comparison artifact — EHI's `ORDER_PROC` includes
+lab orders (75/92) which map to Observation in FHIR, not DiagnosticReport. Excluding labs,
+FHIR actually returns more (includes outside record results).
 
-**Encounter — no 59204 denials.** The gap (15 vs 80 in EHI) is a data model difference:
-EHI's `PAT_ENC` includes cancelled appointments, phone encounters, and message threads.
-FHIR Encounter only exposes completed clinical encounters.
+**Encounter (15 vs 80 in EHI):** Data model difference — EHI's `PAT_ENC` includes cancelled
+appointments, phone encounters, and message threads. FHIR Encounter only exposes completed
+clinical encounters.
 
-**Vitals — no 59204 denials.** The gap (52 vs 93 in EHI) is because EHI's `IP_FLWSHT_MEAS`
-includes screening questions, questionnaire responses, and calculated fields alongside true
-vital signs. FHIR `Observation?category=vital-signs` returns only actual vitals.
-
-**Important:** Once an app is marked "Ready for Production," its API selections are locked.
-Fixing the DocumentReference gap requires registering a new app with the missing endpoints.
+**Vitals (52 vs 93 in EHI):** Data model difference — EHI's `IP_FLWSHT_MEAS` includes
+screening questions, questionnaire responses, and calculated fields. FHIR
+`Observation?category=vital-signs` returns only actual vitals.
 
 ## Adding a New Resource Type
 

@@ -31,6 +31,7 @@ SCOPES = " ".join([
     "openid",
     "fhirUser",
     "launch/patient",
+    "offline_access",
     "patient/Patient.read",
     "patient/Observation.read",
     "patient/DiagnosticReport.read",

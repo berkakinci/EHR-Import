@@ -125,25 +125,15 @@ API selections. If you need to add endpoints, you must register a new app.
 
 ## Scopes
 
-The app requests these OAuth scopes during authorization:
-
-```
-openid fhirUser launch/patient
-patient/Patient.read
-patient/Observation.read
-patient/DiagnosticReport.read
-patient/DocumentReference.read
-patient/Encounter.read
-patient/Condition.read
-patient/MedicationRequest.read
-patient/AllergyIntolerance.read
-```
+The app requests OAuth scopes during authorization. The full list is in `ehr_import/auth.py`
+(SCOPES constant). It includes `patient/<Resource>.read` for every resource type the app
+is registered for.
 
 You don't configure scopes during registration — they're requested at runtime in the
 authorization URL. Epic grants them based on which APIs are selected on the app registration.
 
 **Important:** If you register an API endpoint but don't request its corresponding scope,
-some Epic organizations will return empty results instead of an error. Always keep this
+some Epic organizations may return empty results instead of an error. Always keep the
 scope list in sync with your registered APIs.
 
 ## Finding Your Provider's FHIR Endpoint
@@ -196,8 +186,16 @@ curl -s -b epic_cookies.txt 'https://fhir.epic.com/Specifications/Api?id=931'   
 
 ### Key Findings from Spec Data
 
-- **Binary resources do NOT perform scope validation** (`PerformsScopeValidation: false`).
-  Access is controlled by the app registration (having the API selected), not by an OAuth scope.
-  There is no `patient/Binary.read` scope — requesting it will break the OAuth flow.
+- **Don't request scopes for unregistered resources** — if you request a scope (e.g.,
+  `patient/Binary.read`) but the corresponding API endpoint isn't selected on your app
+  registration, Epic may reject the authorization flow. Always keep the scope list in
+  `ehr_import/auth.py` in sync with what's actually registered.
+- **`PerformsScopeValidation: false`**: The API catalog reports this for all patient-facing
+  R4 resources. This means the server doesn't check scopes when serving data — access is
+  controlled by app registration. But scopes still matter for the auth flow itself and
+  for the patient consent screen.
 - **Sandbox sync delay**: Changes to app registration take up to 1 hour to propagate to the sandbox.
 - **Production sync delay**: Activation of org downloads takes up to 12 hours (1 business day).
+- **Automatic Client Distribution**: Setting this to "None" unlocks the full endpoint catalog
+  but removes self-service activation. Without USCDI v3 (or similar) distribution, each
+  provider's IT team must manually request your client ID — impractical for personal use.
