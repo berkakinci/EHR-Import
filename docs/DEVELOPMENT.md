@@ -15,6 +15,7 @@ flowchart TD
     auth -->|saves tokens| tokens[(tokens.json)]
 
     tokens --> pull
+    resources[ehr_import/resources.py] -->|what to fetch| pull
     pull[ehr_import/pull.py] -->|orchestrates| client[ehr_import/client.py]
     client -->|fetches resources| epic
     pull -->|stores data| store[ehr_import/store.py / ehr_data.db]
@@ -56,7 +57,7 @@ Other files:
   jwks.json                  — public key (JWKS) for JWT auth — production
   jwks-nonprod.json          — public key (JWKS) for JWT auth — non-production
   setup/                     — setup_env.sh, generate_cert.py, generate_jwk.py, verify_setup.py
-  docs/                      — SPEC.md, DEVELOPMENT.md, registration-guide.md, ehi-import.md
+  docs/                      — SPEC.md, DEVELOPMENT.md, registration-guide.md, ehi-import.md, authentication.md, access-restrictions.md
   assets/                    — app icon
 ```
 
@@ -91,158 +92,18 @@ Other files:
 
 ## Authentication Methods
 
-The app supports three OAuth2 authentication methods. Which methods are available is
-determined by the `auth_methods` array in each app's config within `config.json`.
+Three OAuth2 methods: public (PKCE), confidential (JWT assertion), and client secret.
+The active app and its allowed methods are configured in `config.json`. See
+[authentication.md](authentication.md) for the full details — config format, flow
+mechanics, JWT setup, production distribution steps, and the rationale for dual client
+types.
 
-During token exchange, the app tries each configured method in order until one succeeds.
+## Access Restrictions
 
-### Configuration
-
-```json
-{
-    "active_app": "confidential",
-    "apps": {
-        "public": {
-            "client_id": "...",
-            "auth_methods": ["public"]
-        },
-        "confidential": {
-            "client_id": "...",
-            "non_production_client_id": "...",
-            "auth_methods": ["jwt", "secret"]
-        }
-    }
-}
-```
-
-Each method is only attempted if the required credentials are present:
-- `"public"` — always available (PKCE needs no credentials)
-- `"secret"` — requires `DATA_DIR/client_secret.txt`
-- `"jwt"` — requires `DATA_DIR/jwk_private.pem`
-
-The successful method is stored in `tokens.json` so that token refresh uses the same method.
-
-### Public Client (default for open-source use)
-
-- No client secret or key pair needed — just the client ID
-- Uses PKCE (S256 code challenge) for security
-- Anyone can clone the repo and use it immediately
-- **Tradeoff:** No refresh tokens. Access tokens expire (~1 hour), requiring re-login.
-  Acceptable for a "download my data" tool that runs occasionally.
-- Token exchange sends: `client_id` + `code` + `redirect_uri` + `code_verifier`
-
-### Confidential Client (advanced use)
-
-- Requires a registered app with the "confidential client" profile enabled
-- Authenticates to the token endpoint using a signed JWT (`private_key_jwt`)
-- **Enables refresh tokens** — access persists across sessions without re-login
-- Token exchange sends: `client_id` + `code` + `redirect_uri` + `client_assertion`
-
-#### JWT Assertion Flow (private_key_jwt)
-
-Instead of a client secret, the app signs a short-lived JWT with an RSA private key.
-Epic verifies it against the public key hosted at the app's registered JWK Set URL.
-
-1. Generate an RSA key pair (one-time setup via `setup/generate_jwk.py`)
-2. Host the public key as a JWKS file (e.g., raw GitHub URL or any HTTPS endpoint)
-3. Register the JWK Set URL on open.epic.com
-4. At token exchange, the app builds a JWT with:
-   - `iss`: client ID
-   - `sub`: client ID
-   - `aud`: token endpoint URL
-   - `jti`: unique UUID
-   - `exp`: current time + 5 minutes
-5. Signs it with RS384 and sends as `client_assertion`
-
-The private key lives in `DATA_DIR/jwk_private.pem` (gitignored).
-The public JWKS lives in the public repo at `jwks.json`.
-
-#### Why JWK Set URL over Client Secret
-
-- Epic hashes client secrets — you can't retrieve them after generation
-- Secrets are per-organization (each org download needs its own secret)
-- JWK Set URL is set once at the app level and works for all organizations
-- Epic recommends JWK Set URL and is deprecating other methods for backend apps
-
-### Why Two Client Types?
-
-Epic's model requires each developer to register their own app. For an open-source tool
-whose purpose is helping patients access their own data, this creates unacceptable friction.
-
-The public client path eliminates all credential management — users just need the shared
-client ID (published in the repo). The confidential path exists for developers who want
-refresh tokens and are willing to register their own app.
-
-### Production Distribution (Confidential Client)
-
-After marking an app "Ready for Production" on open.epic.com:
-1. Epic organizations request to download the app (happens automatically for qualifying apps)
-2. The developer must activate each download via "Review & Manage Downloads"
-3. Non-production must be activated before production
-4. With JWK Set URL auth, select "JWK Set URL (Recommended)" — it uses the app-level URL
-5. Leave "Use App-level Endpoint URIs" checked unless redirect URIs vary per org (our single localhost redirect works fine at app level)
-6. There may be a sync delay (up to 1 business day) before the org recognizes the client ID
-
-## Access Restrictions (OperationOutcome Codes)
-
-Epic returns OperationOutcome issues alongside FHIR results to signal incomplete data.
-These are captured in the `pull_warnings` table for forensic analysis.
-
-### Warning Codes
-
-Epic returns multiple `issue` entries within a single OperationOutcome response. The codes
-work together:
-
-- **4119 is a generic summary flag** — it accompanies one or more specific 59204/59205
-  entries. It means "this response is incomplete" but doesn't say why on its own. The
-  specific 59204/59205 sibling issues name exactly which sub-resource was withheld.
-- On the USCDI v3 app with full endpoint registration, every 4119 has an accompanying
-  59204 or 59205 that explains it. No standalone unexplained 4119s have been observed.
-
-| Code | Level | Meaning |
-|------|-------|---------|
-| 4119 | Generic | "May not contain the entire record." Summary flag — always paired with a specific 59204 or 59205 that names the withheld sub-resource. |
-| 59204 | App-level | "Client not authorized for [Resource] - [Sub-resource]." The **app registration** is missing a specific API endpoint. Affects all users equally regardless of login. Fix: register a new app with the missing endpoints (production-locked apps cannot be modified). |
-| 59205 | User-level | "User not authorized for [Resource] - [Sub-resource]." The **authenticated user** lacks permission to view that sub-resource. Observed on proxy/guardian logins (blocked from "Outside Record" data) and on sandbox test users (blocked from specialty sub-resources like Genomics, SmartData Elements). Nothing the app developer can do. |
-| 4101 | Informational | "Resource request returns no results." Normal — the patient simply has no data of that type. |
-| 59100 | Informational | "Content invalid against the specification." Usually a parameter warning (e.g., unknown param ignored). |
-
-### Observed Patterns (BCH, May 2026)
-
-**User-level (59205) — proxy vs direct login:**
-- Proxy blocked from: AllergyIntolerance, MedicationRequest, Immunization, MedicationDispense, Procedure, Goal — all "Outside Record" sub-resources
-- Direct login: no 59205 errors; gets full data including received/external records
-- Impact: Medications 15→131, Immunizations 6→74, MedicationDispense 0→77, Procedures 0→27, Allergies 2→6
-
-**App-level (59204) — affects both logins equally:**
-- Named denials on production (Tufts): Condition (Genomics, Dental Finding, Infection, Medical History, Reason For Visit)
-- These are non-USCDI sub-resources not included in the USCDI v3 automatic distribution
-
-### Remaining Gaps (USCDI v3 App)
-
-The USCDI v3 app (`f2a91bd8`) is missing some non-USCDI sub-resources. On production
-(Tufts), these appear as 59204 denials for Condition (Genomics, Dental Finding, Infection,
-Medical History, Reason For Visit). These are unlikely to contain data for most patients.
-
-The apparent gaps in record counts between EHI export and FHIR pull are mostly data model
-differences, not access restrictions:
-
-**DocumentReference (13 via FHIR vs 228 in EHI):** The EHI's `HNO_INFO` table contains all
-note types. FHIR returns only sub-resources the app is authorized for. The USCDI v3 app
-has Clinical Notes but is missing some non-USCDI DocumentReference sub-resources (Document
-Information, External CDAs, Clinical References, Radiology Results, Correspondences, etc.).
-
-**DiagnosticReport (28 vs 92 in EHI):** Comparison artifact — EHI's `ORDER_PROC` includes
-lab orders (75/92) which map to Observation in FHIR, not DiagnosticReport. Excluding labs,
-FHIR actually returns more (includes outside record results).
-
-**Encounter (15 vs 80 in EHI):** Data model difference — EHI's `PAT_ENC` includes cancelled
-appointments, phone encounters, and message threads. FHIR Encounter only exposes completed
-clinical encounters.
-
-**Vitals (52 vs 93 in EHI):** Data model difference — EHI's `IP_FLWSHT_MEAS` includes
-screening questions, questionnaire responses, and calculated fields. FHIR
-`Observation?category=vital-signs` returns only actual vitals.
+Epic returns OperationOutcome issues to signal incomplete data. These are captured in
+`pull_warnings` for forensic analysis. See [access-restrictions.md](access-restrictions.md)
+for the full breakdown of warning codes, observed patterns, known limitations, and the
+FHIR vs EHI comparison.
 
 ## Adding a New Resource Type
 
