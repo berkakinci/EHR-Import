@@ -34,6 +34,9 @@
             "hint": "Pediatric Physicians",
             "redirect_uri": "https://lvh.me:9432/callback"
         },
+        "Brigham": {
+            "portal_url": "https://patientgateway.massgeneralbrigham.org/mychart-prd"
+        },
         "Epic Sandbox": {
             "fhir_base": "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4",
             "non_production": true

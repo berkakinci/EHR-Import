@@ -64,10 +64,10 @@ The EHI export and FHIR API pull produce **different database schemas** and are 
 - **`pull.py`** → `ehr_data.db` — Normalized, curated tables (`labs`, `notes`, `conditions`). Designed for ongoing incremental pulls. Clean column names, FHIR resource IDs.
 - **`ehi_import.py`** → `ehi_export.db` — Raw Epic Clarity tables with original column names. One-time bulk import. Complete record but requires Epic schema knowledge to navigate.
 
-The EHI export is useful for:
-- **Auditing completeness** — comparing what the FHIR API returns vs. the full record
-- **Accessing data the API withholds** — notes, encounters, and other resources flagged with OperationOutcome 4119
-- **One-time archival** — a complete snapshot of the record at a point in time
+The EHI export is useful for auditing what the FHIR API withholds, accessing data
+blocked by OperationOutcome restrictions, and one-time archival. For a detailed
+comparison of what each source returns (with real record counts), see
+[Access Restrictions — FHIR vs EHI](access-restrictions.md#fhir-vs-ehi-what-you-actually-get-real-world-comparison).
 
 ## Comparing Sources
 

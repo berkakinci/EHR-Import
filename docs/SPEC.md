@@ -22,25 +22,12 @@ EHRs into a local, queryable database for personal health tracking and research.
 
 ## Data Scope
 
-### Implemented
+15 FHIR resource types stored in convenience tables (labs, vitals, notes, diagnostic
+reports, conditions, allergies, encounters, medications, social history, assessments,
+immunizations, medication dispenses, procedures, care plans, goals). See the
+[README](../README.md#what-gets-pulled) for the full mapping table.
 
-| Data Type | FHIR Resource | Storage |
-|-----------|--------------|---------|
-| Lab results | Observation (category: laboratory) | `labs` table |
-| Vital signs | Observation (category: vital-signs) | `vitals` table |
-| Clinical notes | DocumentReference (category: clinical-note) | `notes` table (with content fetch) |
-| Diagnostic reports | DiagnosticReport | `diagnostic_reports` table (with content fetch) |
-| Conditions | Condition | `conditions` table |
-| Allergies | AllergyIntolerance | `allergies` table (case-deduped) |
-| Encounters | Encounter | `encounters` table |
-| Medications | MedicationRequest | `medications` table |
-| Social history | Observation (category: social-history) | `social_history` table |
-| Assessments | Observation (category: survey) | `assessments` table |
-| Immunizations | Immunization | `immunizations` table |
-| Medication dispenses | MedicationDispense | `medication_dispenses` table |
-| Procedures | Procedure | `procedures` table |
-| Care plans | CarePlan | `care_plans` table |
-| Goals | Goal | `goals` table |
+Additionally, C-CDA imports write to `treatment_plans` (no FHIR equivalent).
 
 ### Not yet implemented
 
@@ -51,23 +38,20 @@ EHRs into a local, queryable database for personal health tracking and research.
 
 ## Authentication
 
-- SMART on FHIR standalone patient launch (OAuth2 authorization code)
-- Three auth methods supported (auto-detected from credential files):
-  - **Public client** (default): PKCE (S256), no secrets, no refresh tokens — for open-source use
-  - **Client secret**: confidential client with shared secret, refresh tokens
-  - **JWT assertion** (private_key_jwt): confidential client with RSA key pair, refresh tokens
-- HTTPS localhost callback (self-signed cert)
-- Two registered apps: public (shared client ID) and confidential (personal use)
+SMART on FHIR standalone patient launch (OAuth2). Public client (PKCE) for open-source
+use; confidential client (JWT assertion) for persistent access with refresh tokens.
+See [Authentication](authentication.md) for full details.
 
 ## Data Storage
 
-- SQLite database in private directory
-- Raw FHIR JSON preserved alongside structured tables
-- Per-provider partitioning via `provider` column
-- Per-patient partitioning via `patient_id` column (supports family members)
-- Sync log for tracking pull history
-- Content fetch status tracking on notes and reports (status, detail, URL for retry)
-- OperationOutcome resources filtered from FHIR Bundle entries before storage
+- SQLite database (`ehr_data.db`), local-first (private sibling directory)
+- Multi-source (`source` column), multi-provider, multi-patient
+- Two-tier: generic `resources` table (raw JSON) + convenience tables (curated columns)
+- Schema versioned with forward-only migrations
+
+See [Unified Database Spec](unified-db-spec.md) for full schema, field mappings,
+and deduplication strategy. See [DEVELOPMENT.md](DEVELOPMENT.md#database-schema)
+for the convenience table definitions.
 
 ## Privacy Model
 
@@ -77,10 +61,35 @@ EHRs into a local, queryable database for personal health tracking and research.
 - `.gitignore` prevents accidental commits of private data
 - No network calls except to the user's own EHR endpoints
 
+## Multi-Source Import
+
+The unified database accepts data from multiple source types, not just FHIR:
+
+| # | Source | Format | Importer | Status |
+|---|--------|--------|----------|--------|
+| 1 | Epic FHIR (BCH, Andover Pedi, Tufts, Brigham) | FHIR R4 JSON | `pull.py` | ✅ Live |
+| 2 | eClinicalWorks C-CDA (Allergy & Asthma) | C-CDA R2.1 XML | `ccda_import.py` | ✅ Live |
+| 3 | BCH EHI export | Clarity TSV dump | `ehi_import.py` | ✅ Separate DB (ad-hoc reference) |
+| 4 | eClinicalWorks FHIR (healow) | FHIR R4 JSON | `pull.py` | 🔜 Planned |
+
+Schema design, field mappings, and deduplication strategy are documented in the
+[Unified Database Spec](unified-db-spec.md). The eClinicalWorks FHIR integration
+plan (auth abstraction, config changes, testing) is in the
+[eClinicalWorks Integration Plan](eclinicalworks-integration.md).
+
 ## Future Considerations
 
-- ~~C-CDA XML import (from MyChart "computer-readable export")~~ — partially done: `ehi_import.py` ingests the full EHI export into a separate SQLite DB (raw Clarity schema, not unified with FHIR DB)
 - Apple Health integration
 - Visualization/analysis tools on top of the local DB
-- TEFCA IAS for broader provider coverage
+- TEFCA IAS for broader provider coverage (Correspondences, Radiology Results)
 - Async/parallel fetching for large histories
+- healow/eClinicalWorks FHIR registration and pull (see [integration plan](eclinicalworks-integration.md))
+
+## Related Specs
+
+| Document | Scope |
+|----------|-------|
+| [Unified Database Spec](unified-db-spec.md) | Multi-source schema design, field mappings, deduplication strategy, migration history |
+| [eClinicalWorks Integration Plan](eclinicalworks-integration.md) | healow FHIR auth, config changes, implementation phases, open questions |
+| [Access Restrictions](access-restrictions.md) | OperationOutcome codes, data gaps, FHIR vs EHI comparison |
+| [Authentication](authentication.md) | OAuth2 methods, JWT setup, scope behavior, production distribution |

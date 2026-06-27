@@ -100,9 +100,9 @@ identical IDs and is silently deduplicated via `INSERT OR IGNORE`.
 
 | C-CDA field | ehr_data.db column | Notes |
 |-------------|-------------------|-------|
-| — | fhir_id | Generated: `ccda:{file}:{loinc}:{date}` |
-| — | patient_id | Configured (Corvid's ID at this practice) |
-| — | provider | `"Allergy & Asthma Specialists"` |
+| — | fhir_id | Generated: `ccda:{patient_id}:{date}:{code_display}:{value}` |
+| — | patient_id | Auto-detected from C-CDA demographics (or `--patient-id` override) |
+| — | provider | `"Allergy & Asthma Specialists"` (or `--provider` override) |
 | name | code_display | |
 | value | value | |
 | unit | unit | |
@@ -116,9 +116,9 @@ identical IDs and is silently deduplicated via `INSERT OR IGNORE`.
 
 | C-CDA field | ehr_data.db column |
 |-------------|-------------------|
-| — | fhir_id | Generated: `ccda:{file}:{enc_id}` |
-| — | patient_id | Configured |
-| — | provider | `"Allergy & Asthma Specialists"` |
+| — | fhir_id | Generated: `ccda:{patient_id}:{date}:{provider_npi_or_name}` |
+| — | patient_id | Auto-detected from C-CDA demographics |
+| — | provider | `"Allergy & Asthma Specialists"` (or `--provider` override) |
 | type | encounter_type | |
 | — | status | `"finished"` |
 | — | class | `"ambulatory"` |
@@ -168,13 +168,15 @@ or prefer one source over another.
 
 ## Implementation Tasks
 
-1. **Add `source` column** to existing tables (migration script)
-2. **Refactor `ccda_import.py`** to write into `ehr_data.db` schema instead of its own
-3. **Add `assessments` table** to the DB schema
-4. **Add patient_id config** for C-CDA sources (map "Corvid at AAS" → a patient_id)
-5. **Generate synthetic fhir_ids** for C-CDA records
-6. **Test**: import C-CDA, verify labs appear in `build_labs_report.py` output
-7. **Update build scripts** if needed (should just work if schema is compatible)
+All items completed as of 2026-06-27:
+
+1. ~~**Add `source` column** to existing tables (migration script)~~ — `migrate_db.py` v1
+2. ~~**Refactor `ccda_import.py`** to write into `ehr_data.db` schema~~ — `ehr_import/tools/ccda_import.py`
+3. ~~**Add `treatment_plans` table** to the DB schema~~ — in migration v1
+4. ~~**Add patient_id config** for C-CDA sources~~ — auto-detected from C-CDA demographics, with `--patient-id` override
+5. ~~**Generate synthetic fhir_ids** for C-CDA records~~ — content-based hashing (see "Unique constraint strategy" above)
+6. ~~**Test**: import C-CDA, verify labs appear in build output~~ — 237 records imported from Allergy & Asthma 2008-2026
+7. ~~**Update build scripts** if needed~~ — compatible, no changes required
 
 ## Non-goals
 

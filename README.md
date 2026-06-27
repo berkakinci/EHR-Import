@@ -51,6 +51,16 @@ python ehi_import.py --source /path/to/Extracted --db ./ehi_export.db
 
 See [docs/ehi-import.md](docs/ehi-import.md) for details.
 
+## C-CDA Import
+
+Some providers export records as C-CDA XML (common with eClinicalWorks/healow). Import them into the same unified database:
+
+```bash
+python ccda_import.py --source /path/to/ccda-files/
+```
+
+Patient identity is auto-detected from the C-CDA demographics. Records are deduplicated by content — safe to re-run on the same files.
+
 ## Privacy
 
 All tokens, databases, and API responses are stored outside this repo in a private sibling directory. Nothing sensitive touches git.
@@ -83,6 +93,12 @@ python db.py status
 # Import an EHI export
 python ehi_import.py --source /path/to/Extracted --db ./ehi_export.db
 
+# Import C-CDA XML documents into unified DB
+python ccda_import.py --source /path/to/ccda-files/
+
+# Run schema migrations (safe to re-run)
+python migrate_db.py --db ./ehr_data.db
+
 # Compare FHIR pull vs EHI export
 python compare_sources.py --ehi ./ehi_export.db --fhir ./ehr_data.db \
     --provider "Boston Children's" --patient <patient_id>
@@ -104,6 +120,7 @@ This supports family members via proxy access — log in as yourself, select the
 | Boston Children's | Boston Children's Hospital | mychart.childrenshospital.org |
 | Tufts | Tufts Medicine | mytuftsmed.org |
 | Andover Pedi | Pediatric Physicians' Organization at Children's | mychart.chppoc.org |
+| Brigham | Mass General Brigham | patientgateway.massgeneralbrigham.org |
 
 Add your own by editing `config.json` — provide a `portal_url` or `hint` for endpoint discovery.
 
@@ -136,10 +153,14 @@ Add your own by editing `config.json` — provide a `portal_url` or `hint` for e
 
 All resources are also stored as raw JSON in a generic `resources` table — query it directly if you need fields not in the convenience tables.
 
+The C-CDA importer also writes to `treatment_plans` (encounter-linked diagnosis and plan text) — a table with no FHIR equivalent.
+
 ## Documentation
 
 - [Setup guide](setup/README.md)
 - [For Developers](docs/DEVELOPMENT.md)
 - [Project spec](docs/SPEC.md)
+- [Unified database schema](docs/unified-db-spec.md)
 - [Epic app registration](docs/registration-guide.md) (only needed for advanced/confidential client use)
 - [EHI export guide](docs/ehi-import.md)
+- [eClinicalWorks integration](docs/eclinicalworks-integration.md)

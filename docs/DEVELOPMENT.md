@@ -41,6 +41,7 @@ ehr_import/                  — Python package (core logic)
     probe.py                 — probe_subresources: identifies access restrictions per subresource
     compare.py               — compare_sources: record count comparison across EHI/FHIR sources
     ehi_import.py            — imports Epic EHI (Requested Record) TSV exports into SQLite
+    ccda_import.py           — imports C-CDA R2.1 XML into unified ehr_data.db (multi-source)
 
 Top-level entry points (thin wrappers):
   auth.py                    → ehr_import.auth.main()
@@ -49,15 +50,17 @@ Top-level entry points (thin wrappers):
   db.py                      → Database init / status check
   config.py                  → print_config()
   ehi_import.py              → tools.ehi_import.main()
+  ccda_import.py             → tools.ccda_import.build_database()
   compare_sources.py         → tools.compare.main()
   probe_subresources.py      → tools.probe.main()
+  migrate_db.py              → schema migrations (v0 → v1: source column, content_html, treatment_plans)
 
 Other files:
   config.json                — public config: app client IDs, redirect URI, providers, active app
   jwks.json                  — public key (JWKS) for JWT auth — production
   jwks-nonprod.json          — public key (JWKS) for JWT auth — non-production
   setup/                     — setup_env.sh, generate_cert.py, generate_jwk.py, verify_setup.py
-  docs/                      — SPEC.md, DEVELOPMENT.md, registration-guide.md, ehi-import.md, authentication.md, access-restrictions.md
+  docs/                      — SPEC.md, DEVELOPMENT.md, unified-db-spec.md, registration-guide.md, ehi-import.md, authentication.md, access-restrictions.md, eclinicalworks-integration.md
   assets/                    — app icon
 ```
 
@@ -126,9 +129,8 @@ Then run `python db.py` to create the new table, and `python pull.py` to populat
 
 ## Adding a New Provider
 
-1. Add entry to `config.json` under `providers` with `portal_url` or `hint`
-2. Run `python discover.py` to find its FHIR endpoints
-3. Run `python auth.py "<new provider>"` to authenticate
+See [setup/README.md — Adding Your Providers](../setup/README.md#adding-your-providers)
+for the config format and discovery options.
 
 ## Database Schema
 
