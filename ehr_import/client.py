@@ -35,10 +35,24 @@ class FHIRClient:
         """Follow FHIR pagination to get all results.
 
         Returns (entries, warnings) where warnings is a list of OperationOutcome issue dicts.
+        If the initial request returns a 4xx with an OperationOutcome body, the issues
+        are returned as warnings (no exception raised) so they get stored in pull_warnings.
         """
         entries = []
         warnings = []
-        bundle = self.get(resource_path, params)
+        try:
+            bundle = self.get(resource_path, params)
+        except requests.exceptions.HTTPError as e:
+            # Try to extract OperationOutcome from the error response
+            try:
+                body = e.response.json()
+                if body.get("resourceType") == "OperationOutcome":
+                    for issue in body.get("issue", []):
+                        warnings.append(issue)
+                    return entries, warnings
+            except (ValueError, AttributeError):
+                pass
+            raise  # Re-raise if we couldn't parse an OperationOutcome
 
         while True:
             for entry in bundle.get("entry", []):

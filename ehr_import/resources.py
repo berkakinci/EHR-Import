@@ -237,22 +237,34 @@ RESOURCES = [
         "effective_date": ["performedDateTime", "performedPeriod.start"],
     },
 
-    # --- CarePlan ---
-    {
-        "fhir_type": "CarePlan",
-        "label": "CarePlan",
-        "search_params": {},
-        "table": "care_plans",
-        "columns": {
-            "title": "title",
-            "status": "status",
-            "intent": "intent",
-            "category": "@coding_display:category[0]",
-            "start_date": "period.start",
-            "end_date": "period.end",
-        },
-        "effective_date": ["period.start"],
-    },
+    # --- CarePlan (split by required category) ---
+    # Epic requires a category param for CarePlan search. Categories that aren't
+    # authorized under our app registration will return 400 with OperationOutcome
+    # warnings (59204/59022) — these are captured in pull_warnings for forensics.
+    *[
+        {
+            "fhir_type": "CarePlan",
+            "label": f"CarePlan ({label})",
+            "search_params": {"category": code},
+            "table": "care_plans",
+            "columns": {
+                "title": "title",
+                "status": "status",
+                "intent": "intent",
+                "category": "@coding_display:category[0]",
+                "start_date": "period.start",
+                "end_date": "period.end",
+            },
+            "effective_date": ["period.start"],
+        }
+        for code, label in [
+            ("38717003", "longitudinal"),
+            ("734163000", "encounter"),
+            ("736271009", "outpatient"),
+            ("736353004", "inpatient"),
+            ("409073007", "education"),
+        ]
+    ],
 
     # --- Goal ---
     {
