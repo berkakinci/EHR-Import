@@ -166,18 +166,6 @@ Cross-source deduplication (same lab result in both FHIR and C-CDA) is handled
 by the build scripts at query time — they can `GROUP BY effective_date, code_display, value`
 or prefer one source over another.
 
-## Implementation Tasks
-
-All items completed as of 2026-06-27:
-
-1. ~~**Add `source` column** to existing tables (migration script)~~ — `migrate_db.py` v1
-2. ~~**Refactor `ccda_import.py`** to write into `ehr_data.db` schema~~ — `ehr_import/tools/ccda_import.py`
-3. ~~**Add `treatment_plans` table** to the DB schema~~ — in migration v1
-4. ~~**Add patient_id config** for C-CDA sources~~ — auto-detected from C-CDA demographics, with `--patient-id` override
-5. ~~**Generate synthetic fhir_ids** for C-CDA records~~ — content-based hashing (see "Unique constraint strategy" above)
-6. ~~**Test**: import C-CDA, verify labs appear in build output~~ — 237 records imported from Allergy & Asthma 2008-2026
-7. ~~**Update build scripts** if needed~~ — compatible, no changes required
-
 ## Non-goals
 
 - EHI export remains a separate DB (too different, ad-hoc reference use)
