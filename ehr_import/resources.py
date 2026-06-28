@@ -43,6 +43,7 @@ RESOURCES = [
             "unit": "@unit:",
             "reference_range": "@ref_range:",
             "status": "status",
+            "ordering_provider": "@performer:",
         },
         "effective_date": ["effectiveDateTime", "effectivePeriod.start"],
     },

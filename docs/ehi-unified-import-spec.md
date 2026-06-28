@@ -170,12 +170,12 @@ The `Received C-CDA/` directory in an EHI export contains records sent to this p
 
 ## Implementation Order
 
-1. Schema migration (add `content_rtf` to notes, `ordering_provider` + `panel_name` to labs)
-2. Backfill `ordering_provider` and `panel_name` for existing FHIR rows from `raw_json`
-3. Refactor existing `ehi_import.py` / `ehr_import/tools/ehi_import.py`:
+1. ✅ Schema migration (add `content_rtf` to notes, `ordering_provider` + `panel_name` to labs, `lot_number`/`manufacturer`/`administering_location` to immunizations, `messages` table, `family_history` table)
+2. ✅ Backfill `ordering_provider` and `panel_name` for existing FHIR rows from `raw_json`; future FHIR pulls also populate `ordering_provider` via `@performer:` extractor
+3. ✅ Refactor existing `ehi_import.py` / `ehr_import/tools/ehi_unified_import.py`:
    - Parse mappable tables → unified DB
    - Parse remaining tables → raw DB
    - RTF → plain text extraction (lightweight, no HTML conversion)
    - Received C-CDA passthrough to ccda_import
-4. Update CLI entry point
-5. Update docs (unified-db-spec.md, ehi-import.md, README)
+4. ✅ Update CLI entry point
+5. ✅ Update docs (unified-db-spec.md, DEVELOPMENT.md, README)

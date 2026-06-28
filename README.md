@@ -46,8 +46,15 @@ Any Epic-based health system with MyChart works. Add it to `config.json` and run
 The FHIR API doesn't return everything. Under the Cures Act, you can request your complete record through MyChart (Menu → Health → Request My Records → Computer-Readable Format). Once you have the ZIP:
 
 ```bash
-python ehi_import.py --source /path/to/Extracted --db ./ehi_export.db
+# Unified import — maps clinical data into ehr_data.db alongside FHIR pulls,
+# and archives the full export losslessly into a raw DB
+python ehi_import.py --source /path/to/Extracted
+
+# Raw-only mode (legacy) — just import everything into one SQLite DB
+python ehi_import.py --source /path/to/Extracted --raw-only --raw-db ./ehi_export.db
 ```
+
+The unified import extracts labs, notes, encounters, vitals, conditions, allergies, medications, immunizations, messages, family history, and social history into the same `ehr_data.db` used by FHIR pulls. Received C-CDAs (external records from other providers) are automatically parsed too. Re-running is idempotent.
 
 See [docs/ehi-import.md](docs/ehi-import.md) for details.
 
@@ -90,8 +97,11 @@ python pull.py "Boston Children's" --since 2024-06-01
 # Check database status (record counts, completeness)
 python db.py status
 
-# Import an EHI export
-python ehi_import.py --source /path/to/Extracted --db ./ehi_export.db
+# Import an EHI export (dual-output: raw + unified)
+python ehi_import.py --source /path/to/Extracted
+
+# Import an EHI export (raw-only, legacy)
+python ehi_import.py --source /path/to/Extracted --raw-only --raw-db ./ehi_export.db
 
 # Import C-CDA XML documents into unified DB
 python ccda_import.py --source /path/to/ccda-files/
@@ -154,6 +164,12 @@ Add your own by editing `config.json` — provide a `portal_url` or `hint` for e
 All resources are also stored as raw JSON in a generic `resources` table — query it directly if you need fields not in the convenience tables.
 
 The C-CDA importer also writes to `treatment_plans` (encounter-linked diagnosis and plan text) — a table with no FHIR equivalent.
+
+The EHI importer additionally writes to:
+- `messages` — MyChart message threads (blocked by FHIR's USCDI restriction)
+- `family_history` — family medical history (relation + condition)
+- Enriches `immunizations` with lot number, manufacturer, and administering location
+- Enriches `labs` with ordering provider and panel name
 
 ## Documentation
 

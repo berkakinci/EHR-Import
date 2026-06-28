@@ -11,7 +11,7 @@ identifying its origin.
 | # | Source | Format | Status | Target tables |
 |---|--------|--------|--------|---------------|
 | 1 | Epic FHIR (BCH, Andover, Tufts, Brigham) | FHIR R4 JSON | ✅ Live | labs, encounters, vitals, conditions, immunizations, medications, notes |
-| 2 | Epic EHI export | Clarity TSV dump | 🔜 [Dual-output redesign](ehi-unified-import-spec.md) | labs, encounters, vitals, conditions, immunizations, medications, notes, allergies, messages, family_history, social_history |
+| 2 | Epic EHI export | Clarity TSV dump | ✅ Implemented | labs, encounters, vitals, conditions, immunizations, medications, notes, allergies, messages, family_history, social_history |
 | 3 | eCW C-CDA (Allergy & Asthma) | C-CDA R2.1 XML | ✅ Script written | labs, encounters, vitals, conditions, immunizations, medications, treatment_plans, notes |
 | 4 | eCW FHIR (healow) | FHIR R4 JSON | 🔜 Future | Same as #1 |
 

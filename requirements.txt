@@ -3,3 +3,4 @@ python-dotenv>=1.0.0
 httpx>=0.28.0
 cryptography>=42.0.0
 PyJWT>=2.8.0
+striprtf>=0.0.26

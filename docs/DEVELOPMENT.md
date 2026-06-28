@@ -40,7 +40,8 @@ ehr_import/                  — Python package (core logic)
     __init__.py
     probe.py                 — probe_subresources: identifies access restrictions per subresource
     compare.py               — compare_sources: record count comparison across EHI/FHIR sources
-    ehi_import.py            — imports Epic EHI (Requested Record) TSV exports into SQLite
+    ehi_import.py            — imports Epic EHI (Requested Record) TSV exports into SQLite (raw DB)
+    ehi_unified_import.py    — dual-output EHI pipeline: raw DB + unified schema mapping
     ccda_import.py           — imports C-CDA R2.1 XML into unified ehr_data.db (multi-source)
 
 Top-level entry points (thin wrappers):
@@ -49,11 +50,11 @@ Top-level entry points (thin wrappers):
   discover.py                → ehr_import.discover.main()
   db.py                      → Database init / status check
   config.py                  → print_config()
-  ehi_import.py              → tools.ehi_import.main()
+  ehi_import.py              → tools.ehi_unified_import (dual-output, default) or tools.ehi_import (--raw-only)
   ccda_import.py             → tools.ccda_import.build_database()
   compare_sources.py         → tools.compare.main()
   probe_subresources.py      → tools.probe.main()
-  migrate_db.py              → schema migrations (v0 → v1: source column, content_html, treatment_plans)
+  migrate_db.py              → schema migrations (v0 → v1 → v2)
 
 Other files:
   config.json                — public config: app client IDs, redirect URI, providers, active app

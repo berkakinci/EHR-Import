@@ -64,6 +64,9 @@ def extract_field(resource: dict, spec: str) -> str | int | None:
     if spec == "@reactions:":
         return _extract_reactions(resource)
 
+    if spec == "@performer:":
+        return _extract_performer(resource)
+
     if spec == "@dosage:":
         return _extract_dosage(resource)
 
@@ -170,6 +173,14 @@ def _extract_reactions(allergy: dict) -> str | None:
             if text:
                 parts.append(text)
     return "; ".join(parts) if parts else None
+
+
+def _extract_performer(resource: dict) -> str | None:
+    """Extract performer/ordering provider display name from an Observation."""
+    performers = resource.get("performer", [])
+    if performers:
+        return performers[0].get("display")
+    return None
 
 
 def _extract_dosage(med: dict) -> str | None:
