@@ -11,8 +11,8 @@ identifying its origin.
 | # | Source | Format | Status | Target tables |
 |---|--------|--------|--------|---------------|
 | 1 | Epic FHIR (BCH, Andover, Tufts, Brigham) | FHIR R4 JSON | ✅ Live | labs, encounters, vitals, conditions, immunizations, medications, notes |
-| 2 | BCH EHI export | Clarity TSV dump | ✅ Imported (separate DB) | Consulted ad-hoc, not merged |
-| 3 | eCW C-CDA (Allergy & Asthma) | C-CDA R2.1 XML | ✅ Script written | labs, encounters, vitals, conditions, immunizations, medications, assessments |
+| 2 | Epic EHI export | Clarity TSV dump | 🔜 [Dual-output redesign](ehi-unified-import-spec.md) | labs, encounters, vitals, conditions, immunizations, medications, notes, allergies, messages, family_history, social_history |
+| 3 | eCW C-CDA (Allergy & Asthma) | C-CDA R2.1 XML | ✅ Script written | labs, encounters, vitals, conditions, immunizations, medications, treatment_plans, notes |
 | 4 | eCW FHIR (healow) | FHIR R4 JSON | 🔜 Future | Same as #1 |
 
 ## Schema Changes to `ehr_data.db`
@@ -158,16 +158,25 @@ identical IDs and is silently deduplicated via `INSERT OR IGNORE`.
 
 ## Deduplication
 
-On import, use `INSERT OR IGNORE` with the content-based synthetic fhir_id.
-Re-running the C-CDA import is idempotent — duplicates are silently skipped,
-even if source files are renamed or re-downloaded.
+On import, use `INSERT OR IGNORE` with source-native or content-based `fhir_id`.
+Re-running any import is idempotent — duplicates are silently skipped.
 
-Cross-source deduplication (same lab result in both FHIR and C-CDA) is handled
-by the build scripts at query time — they can `GROUP BY effective_date, code_display, value`
-or prefer one source over another.
+Cross-source deduplication (same clinical fact in FHIR, EHI, and C-CDA) is
+deliberately NOT handled at import time. The same lab result may appear as
+multiple rows with different `source` values, `code_display` names (e.g., "CRP"
+vs "C REACTIVE PROTEIN (MG/L) IN SER/PLAS"), and slightly different dates.
+This is intentional — import preserves everything faithfully.
+
+### Query-time dedup (future: `ehr_import.dedup` module)
+
+Downstream consumers (timeline, labs reports) need a dedup layer. Planned:
+
+- **Component name normalization** — map LOINC long names, FHIR display names, and EHI Clarity names to a canonical form
+- **Date-tolerant matching** — same calendar day = likely same draw (handles EHI's per-component result dates vs FHIR's single order timestamp)
+- **Source-preference rules** — when duplicates are detected, prefer one source over another (e.g., FHIR for metadata richness, EHI for completeness)
+- **Deduplicated view/query builder** — reusable function or SQL view that downstream tools call instead of raw table queries
 
 ## Non-goals
 
-- EHI export remains a separate DB (too different, ad-hoc reference use)
 - No automated cross-source dedup at import time (keep it simple, handle in queries)
 - No changes to FHIR pull pipeline (it already works, just gets the `source` column default)

@@ -69,7 +69,7 @@ The unified database accepts data from multiple source types, not just FHIR:
 |---|--------|--------|----------|--------|
 | 1 | Epic FHIR (BCH, Andover Pedi, Tufts, Brigham) | FHIR R4 JSON | `pull.py` | ✅ Live |
 | 2 | eClinicalWorks C-CDA (Allergy & Asthma) | C-CDA R2.1 XML | `ccda_import.py` | ✅ Live |
-| 3 | BCH EHI export | Clarity TSV dump | `ehi_import.py` | ✅ Separate DB (ad-hoc reference) |
+| 3 | Epic EHI export | Clarity TSV dump | `ehi_import.py` | 🔜 [Dual-output redesign](ehi-unified-import-spec.md) |
 | 4 | eClinicalWorks FHIR (healow) | FHIR R4 JSON | `pull.py` | 🔜 Planned |
 
 Schema design, field mappings, and deduplication strategy are documented in the
@@ -90,6 +90,7 @@ plan (auth abstraction, config changes, testing) is in the
 | Document | Scope |
 |----------|-------|
 | [Unified Database Spec](unified-db-spec.md) | Multi-source schema design, field mappings, deduplication strategy, migration history |
+| [EHI Unified Import](ehi-unified-import-spec.md) | Dual-output EHI import: mappable data → unified DB, remainder → raw DB |
 | [eClinicalWorks Integration Plan](eclinicalworks-integration.md) | healow FHIR auth, config changes, implementation phases, open questions |
 | [Access Restrictions](access-restrictions.md) | OperationOutcome codes, data gaps, FHIR vs EHI comparison |
 | [Authentication](authentication.md) | OAuth2 methods, JWT setup, scope behavior, production distribution |
